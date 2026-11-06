@@ -30,6 +30,21 @@ $Repo = 'Fanqi89/dsh-craft-anything'
 function Write-Step([string]$Text) { Write-Host "[release] $Text" }
 function Fail([string]$Text) { Write-Host "[release] ERROR: $Text" -ForegroundColor Red; exit 1 }
 
+# Git and curl both need the system proxy on this machine; git reads the lowercase
+# http(s)_proxy environment variables, which Windows matches case-insensitively.
+$Proxy = ''
+try {
+    $proxyKey = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop
+    if ($proxyKey.ProxyEnable -eq 1 -and $proxyKey.ProxyServer) {
+        $Proxy = [string]$proxyKey.ProxyServer
+        if ($Proxy -notmatch '^\w+://') { $Proxy = "http://$Proxy" }
+        $env:HTTP_PROXY = $Proxy
+        $env:HTTPS_PROXY = $Proxy
+        $env:NO_PROXY = 'localhost,127.0.0.1,registry.npmjs.org'
+        Write-Step "using system proxy $Proxy"
+    }
+} catch { }
+
 Push-Location $Root
 try {
     # ---- 1. the two manifests must agree on the version -------------------------------
@@ -63,13 +78,60 @@ try {
     }
     Write-Step 'syntax and manifests ok'
 
-    # ---- 4. tags are immutable -------------------------------------------------------
+    # ---- 4. the new version must be newer than every published version ---------------
+    # Numbers are never reused and never go backwards, so old and new versions coexist
+    # as separate immutable tags: each stays installable by its own tag.
+    function Get-NumericVersion([string]$Text) {
+        $core = ($Text.TrimStart('v') -split '[-+]')[0]
+        $parts = @()
+        foreach ($piece in ($core -split '\.')) {
+            $number = 0
+            if (-not [int]::TryParse($piece, [ref]$number)) { return $null }
+            $parts += $number
+        }
+        return ,$parts
+    }
+    function Compare-NumericVersion($A, $B) {
+        $length = [Math]::Max($A.Count, $B.Count)
+        for ($i = 0; $i -lt $length; $i++) {
+            $left = if ($i -lt $A.Count) { $A[$i] } else { 0 }
+            $right = if ($i -lt $B.Count) { $B[$i] } else { 0 }
+            if ($left -gt $right) { return 1 }
+            if ($left -lt $right) { return -1 }
+        }
+        return 0
+    }
+
+    $rawTags = @(git ls-remote --tags origin 'refs/tags/v*')
+    if ($LASTEXITCODE -ne 0) { Fail 'git ls-remote --tags failed (network or proxy problem)' }
+    $publishedTags = @($rawTags | ForEach-Object {
+        $ref = ($_ -split "`t")[-1]
+        if ($ref -match 'refs/tags/(.+?)(\^\{\})?$') { $Matches[1] } else { $null }
+    } | Where-Object { $_ -and $_ -notmatch '\^\{\}$' } | Sort-Object -Unique)
+    $latest = $null
+    foreach ($published in $publishedTags) {
+        $numbers = Get-NumericVersion $published
+        if ($null -eq $numbers) { continue }
+        if ($null -eq $latest -or (Compare-NumericVersion $numbers $latest.Numbers) -gt 0) {
+            $latest = [pscustomobject]@{ Tag = $published; Numbers = $numbers }
+        }
+    }
+    $mine = Get-NumericVersion $Version
+    if ($null -eq $mine) { Fail "cannot parse version '$Version'" }
+    if ($latest) {
+        $cmp = Compare-NumericVersion $mine $latest.Numbers
+        if ($cmp -lt 0) { Fail "version $Version is older than the published $($latest.Tag); versions never go backwards" }
+        if ($cmp -eq 0) { Fail "version $Version is not newer than the published $($latest.Tag); bump the version (tags are immutable and versions are never reused)" }
+        Write-Step "new version $Version is newer than published $($latest.Tag) (older versions stay installable by their own tags)"
+    }
+
+    # ---- 5. tags are immutable -------------------------------------------------------
     $localTag = (git tag --list $Tag)
     if ($localTag) { Fail "tag $Tag already exists locally; published tags never move — bump the version" }
     $remoteTag = (git ls-remote --tags origin "refs/tags/$Tag")
     if ($remoteTag) { Fail "tag $Tag already exists on origin; published tags never move — bump the version" }
 
-    # ---- 5. tag and push -------------------------------------------------------------
+    # ---- 6. tag and push -------------------------------------------------------------
     if (-not $Message) { $Message = "dsh-craft-anything $Tag" }
     git tag -a $Tag -m $Message
     if ($LASTEXITCODE -ne 0) { Fail 'git tag failed' }
@@ -103,21 +165,12 @@ try {
     $bodyFile = Join-Path ([System.IO.Path]::GetTempPath()) ("craft-release-body-" + [Guid]::NewGuid().ToString('N') + '.md')
     [IO.File]::WriteAllText($bodyFile, $body, (New-Object System.Text.UTF8Encoding($false)))
 
-    # ---- 7. token + proxy ------------------------------------------------------------
+    # ---- 7. token ---------------------------------------------------------------------
     if (-not $Token) {
         $lines = "protocol=https`nhost=github.com`n`n" | git credential fill
         $Token = (($lines | Where-Object { $_ -like 'password=*' }) -replace '^password=', '')
     }
     if (-not $Token) { Fail 'no GitHub token (pass -Token or store one in the credential manager)' }
-    $Proxy = ''
-    try {
-        $key = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop
-        if ($key.ProxyEnable -eq 1 -and $key.ProxyServer) {
-            $server = [string]$key.ProxyServer
-            if ($server -notmatch '^\w+://') { $server = "http://$server" }
-            $Proxy = $server
-        }
-    } catch { }
 
     # ---- 8. create the release through the API (JSON assembled by node) --------------
     $payloadFile = Join-Path ([System.IO.Path]::GetTempPath()) ("craft-release-" + [Guid]::NewGuid().ToString('N') + '.json')
