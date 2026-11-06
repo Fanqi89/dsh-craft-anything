@@ -33,8 +33,8 @@ function Fail([string]$Text) { Write-Host "[release] ERROR: $Text" -ForegroundCo
 Push-Location $Root
 try {
     # ---- 1. the two manifests must agree on the version -------------------------------
-    $manifest = Get-Content -Raw -Path (Join-Path $Root 'package.json') | ConvertFrom-Json
-    $pluginManifest = Get-Content -Raw -Path (Join-Path $Root 'dsh.plugin.json') | ConvertFrom-Json
+    $utf8 = New-Object System.Text.UTF8Encoding($false); $manifest = [IO.File]::ReadAllText((Join-Path $Root 'package.json'), [Text.Encoding]::UTF8) | ConvertFrom-Json
+    $pluginManifest = [IO.File]::ReadAllText((Join-Path $Root 'dsh.plugin.json'), [Text.Encoding]::UTF8) | ConvertFrom-Json
     $Version = [string]$manifest.version
     if (-not $Version) { Fail 'package.json has no version' }
     if ([string]$pluginManifest.version -ne $Version) {
@@ -58,7 +58,7 @@ try {
     & node --check (Join-Path $Root 'host\index.js'); if ($LASTEXITCODE -ne 0) { Fail 'host/index.js failed node --check' }
     & node --check (Join-Path $Root 'client.js'); if ($LASTEXITCODE -ne 0) { Fail 'client.js failed node --check' }
     foreach ($json in @('package.json', 'dsh.plugin.json', 'locale\en.json', 'locale\zh.json')) {
-        try { Get-Content -Raw -Path (Join-Path $Root $json) | ConvertFrom-Json | Out-Null }
+        try { [IO.File]::ReadAllText((Join-Path $Root $json), [Text.Encoding]::UTF8) | ConvertFrom-Json | Out-Null }
         catch { Fail "$json is not valid JSON: $($_.Exception.Message)" }
     }
     Write-Step 'syntax and manifests ok'
@@ -90,9 +90,9 @@ try {
     $body = ''
     if ($NotesFile) {
         if (-not (Test-Path $NotesFile)) { Fail "notes file not found: $NotesFile" }
-        $body = Get-Content -Raw -Path $NotesFile
+        $body = [IO.File]::ReadAllText((Resolve-Path $NotesFile), [Text.Encoding]::UTF8)
     } else {
-        $changelog = Get-Content -Raw -Path (Join-Path $Root 'CHANGELOG.md')
+        $changelog = [IO.File]::ReadAllText((Join-Path $Root 'CHANGELOG.md'), [Text.Encoding]::UTF8)
         $pattern = "(?ms)^## \[$([regex]::Escape($Tag))\].*?(?=^## \[|\z)"
         $match = [regex]::Match($changelog, $pattern)
         if (-not $match.Success) { Fail "CHANGELOG.md has no '## [$Tag]' section; add one or pass -NotesFile" }
