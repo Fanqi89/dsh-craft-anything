@@ -76,9 +76,27 @@ $Base = "https://github.com/$Repo/releases/download/$Version"
 $Target = Join-Path $Root $PlainVersion
 $Exe = Join-Path $Target 'craft-anything-cli.exe'
 
-if ((Test-Path $Exe) -and -not $Force) {
-    Write-Step "already installed: $Exe"
-    exit 0
+# Already installed? The folder may be named with or without the leading "v" (this machine
+# uses v0.4.0), so scan the install root instead of trusting one exact path.
+function Find-Installed([string]$Version) {
+    if (-not (Test-Path $Root)) { return $null }
+    $directories = @(Get-ChildItem -Path $Root -Directory -ErrorAction SilentlyContinue)
+    foreach ($dir in $directories) {
+        $candidate = Join-Path $dir.FullName 'craft-anything-cli.exe'
+        if (-not (Test-Path $candidate)) { continue }
+        $reported = (& $candidate --version 2>&1 | Out-String).Trim()
+        if ($reported -match [regex]::Escape($Version)) { return $candidate }
+    }
+    return $null
+}
+
+if (-not $Force) {
+    $installed = Find-Installed -Version $PlainVersion
+    if ($installed) {
+        Write-Step "already installed: $installed"
+        Write-Output $installed
+        exit 0
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $Root | Out-Null
@@ -105,7 +123,7 @@ try {
     New-Item -ItemType Directory -Force -Path $Target | Out-Null
     Expand-Archive -Path $Zip -DestinationPath $Target -Force
     # the release packs its files in one top-level folder; flatten it
-    $nested = Get-ChildItem -Path $Target -Directory
+    $nested = @(Get-ChildItem -Path $Target -Directory)
     if ($nested.Count -eq 1) {
         Get-ChildItem -Path $nested[0].FullName -Force | Move-Item -Destination $Target -Force
         Remove-Item -Recurse -Force $nested[0].FullName
