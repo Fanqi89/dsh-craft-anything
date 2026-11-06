@@ -15,6 +15,9 @@
     "url": "https://github.com/Fanqi89/dsh-craft-anything/issues"
   },
   "icon": "./icon.svg",
+  "engines": {
+    "dsh": ">=0.2.0-rc.2"
+  },
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -39,8 +42,11 @@
     "locale/*.json",
     "icon.svg",
     "README.md",
+    "RELEASING.md",
+    "CHANGELOG.md",
     "LICENSE",
-    "scripts/install-cli.ps1"
+    "scripts/install-cli.ps1",
+    "scripts/release.ps1"
   ],
   "peerDependencies": {
     "@deepseek-ai/dsh-mcp-client": ">=0.2.0-rc.2"

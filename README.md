@@ -28,10 +28,23 @@
 
 ### 前置
 
-- DeepSeek Harness 桌面版 **0.2.1-rc.5 或更新**（依赖它自带的 `@deepseek-ai/dsh-mcp-client` 与 Web 槽位 API）。
+- DeepSeek Harness 桌面版 **0.2.0-rc.2 或更新**（`package.json` 的 `engines.dsh` 与 `dsh.plugin.json` 都声明 `>=0.2.0-rc.2`；依赖它自带的 `@deepseek-ai/dsh-mcp-client`）。
+  - Host 侧（MCP 桥、四个工具、HTTP 路由）在 0.2.0-rc.2 起的版本可用；
+  - 界面侧（左侧栏入口、状态页、对话框左下角模式开关）在 0.2.1-rc.5 上真机验证过；更老的 Harness 若没有对应槽位，这几块**自动不出现**，其余功能不受影响。
 - Node.js ≥ 22（MCP 启动器用 `node -e` 运行，DSH 自带 Node 亦可）。
 - 想用 `rebuild` 的话另需一个编码智能体（如 Claude Code）或 API Key；只做「研究/分析」不需要。
 - Windows 下 `craft_install` 会自动下载 CLI；macOS/Linux 请自行安装 CLI 后设置 `CRAFT_ANYTHING_CLI`。
+
+### 版本与安装指定版本
+
+仓库按语义化版本打**不可移动的标签**（`v0.1.0`、`v0.2.0`…），每个版本一个 GitHub Release；新版本只增加标签、不覆盖旧标签，因此老版本随时可装：
+
+```powershell
+dsh plugin --profile desktop add github:Fanqi89/dsh-craft-anything#v0.1.0   # 固定版本
+dsh plugin --profile desktop add github:Fanqi89/dsh-craft-anything          # 跟 main 最新
+```
+
+发布流程与规则见 [RELEASING.md](RELEASING.md)。
 
 ### 从 GitHub 安装（推荐）
 
