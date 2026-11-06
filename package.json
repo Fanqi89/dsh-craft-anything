@@ -1,0 +1,65 @@
+{
+  "name": "dsh-craft-anything",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Craft Anything for DeepSeek Harness: MCP bridge to the local craft-anything CLI (study any website, app or game and have a coding agent rebuild it) plus status, CLI-runner and installer tools and a status page.",
+  "license": "MIT",
+  "author": "fanqi",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fanqi89/dsh-craft-anything.git"
+  },
+  "homepage": "https://github.com/Fanqi89/dsh-craft-anything#readme",
+  "bugs": {
+    "url": "https://github.com/Fanqi89/dsh-craft-anything/issues"
+  },
+  "icon": "./icon.svg",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "craft-anything",
+    "artcraft",
+    "reverse-engineering",
+    "mcp"
+  ],
+  "exports": {
+    ".": "./host/index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "host/index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "dsh.plugin.json",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE",
+    "scripts/install-cli.ps1"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh-mcp-client": ">=0.2.0-rc.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-mcp-client": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}

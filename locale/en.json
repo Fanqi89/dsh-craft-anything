@@ -1,0 +1,15 @@
+{
+  "meta": {
+    "title": "Craft Anything",
+    "description": "Brings the local Craft Anything CLI into DeepSeek Harness: its MCP tools (study and rebuild any website, app or game) plus status, CLI runner and installer tools."
+  },
+  "page": {
+    "title": "Craft Anything",
+    "intro": "Study how software works, with evidence, and let a coding agent rebuild it in a new project.",
+    "cli": "CLI",
+    "mcp": "MCP tools",
+    "project": "Projects",
+    "refresh": "Refresh",
+    "missing": "The craft-anything CLI is not installed yet. Run the craft_install tool (or scripts/install-cli.ps1) to download it, then reload the plugin."
+  }
+}

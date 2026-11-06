@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Craft Anything plugin">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1d3355"/>
+      <stop offset="0.55" stop-color="#152742"/>
+      <stop offset="1" stop-color="#0b1526"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7fe3ff"/>
+      <stop offset="1" stop-color="#3aa7d8"/>
+    </linearGradient>
+    <linearGradient id="spark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffd479"/>
+      <stop offset="1" stop-color="#ff9d3c"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="124" height="124" rx="26" fill="url(#tile)"/>
+  <rect x="2.75" y="2.75" width="122.5" height="122.5" rx="25.5" fill="none" stroke="#2c4a70" stroke-width="1.5"/>
+  <g>
+    <path d="M14 40h100M14 64h100M14 88h100M40 14v100M64 14v100M88 14v100" stroke="#8fc7e8" stroke-width="0.8" opacity="0.16" fill="none"/>
+  </g>
+  <g fill="none" stroke="url(#edge)" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M64 30 96 48v32L64 98 32 80V48Z"/>
+    <path d="M32 48l32 18 32-18M64 66v32"/>
+  </g>
+  <g fill="none" stroke="#9fe8ff" stroke-width="2" stroke-linecap="round" opacity="0.85">
+    <path d="M52 61.5v9M76 61.5v9"/>
+  </g>
+  <g transform="translate(96 26)">
+    <path d="M0 7.5 5.6 0 7.5 5.6 5.6 15 0 7.5Z" fill="url(#spark)"/>
+    <circle cx="-8" cy="3" r="2.2" fill="url(#spark)" opacity="0.9"/>
+    <circle cx="2" cy="-7" r="1.6" fill="url(#spark)" opacity="0.8"/>
+  </g>
+</svg>

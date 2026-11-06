@@ -1,0 +1,15 @@
+{
+  "meta": {
+    "title": "Craft Anything",
+    "description": "把本地 Craft Anything CLI 接入 DeepSeek Harness：提供它的 MCP 工具（研究并重建任意网站、应用或游戏），外加状态、CLI 运行与安装工具。"
+  },
+  "page": {
+    "title": "Craft Anything",
+    "intro": "带证据地看清软件怎么工作，再让编码智能体在新项目里重建它。",
+    "cli": "命令行",
+    "mcp": "MCP 工具",
+    "project": "项目目录",
+    "refresh": "刷新",
+    "missing": "还没有安装 craft-anything 命令行。请调用 craft_install 工具（或 scripts/install-cli.ps1）下载，然后重新加载插件。"
+  }
+}

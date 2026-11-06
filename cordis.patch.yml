@@ -1,0 +1,72 @@
+# dsh-craft-anything — Craft Anything (github.com/storytold/craft-anything) for DeepSeek Harness.
+#
+# Three pieces:
+#   1. craft-anything-host — this package's Host half: craft_status / craft_cli / craft_install /
+#      craft_mode, the /craft-anything/api/status and /craft-anything/api/mode routes, and the
+#      Web page (sidebar icon + panel).
+#   2. craft-anything-mcp  — the shipped @deepseek-ai/dsh-mcp-client, launched on the local
+#      craft-anything-cli, so its MCP tools register as mcp__craft__<tool>.
+#
+# Mode switching (clean room <-> deep) is not a per-call CLI flag in this bridge: the MCP server
+# reads its mode once at startup. The launcher therefore holds the mode in
+# %USERPROFILE%\.dsh\plugins-data\craft-anything\mode.json, starts the server with an explicit
+# --clean-room / --deep, and watches that file: when craft_mode (or the composer chip) changes it,
+# the launcher stops the server, dsh-mcp-client reconnects, and the tool list re-syncs in the new
+# mode. Restarting is expected to take a second or two.
+#
+# The MCP command is a tiny Node launcher instead of a fixed absolute path: it finds the CLI
+# (CRAFT_ANYTHING_CLI, then <root>/bin, then the newest downloaded version under
+# %USERPROFILE%\.dsh\plugins-data\craft-anything) and forwards the process, so a CLI update does
+# not need a patch edit. `craft_install` (or scripts/install-cli.ps1) put it there.
+#
+# Knobs:
+#   - CRAFT_ANYTHING_MCP_ARGS adds CLI flags for the MCP server, e.g. `--all-tools` (107 tools;
+#     with deep mode 321, but that is ~346 KB of tool schemas on every request — weigh it).
+#     Do not put --deep/--clean-room there: the mode file owns those.
+#   - toolCallTimeoutMs is raised because archive/investigation tools can outlive 60 s.
+#   - failOnStartupError stays false: without the CLI the Harness still boots and the tools
+#     simply stay absent until the CLI exists and the plugin reloads.
+- insert:
+    - id: craft-anything-host
+      name: dsh-craft-anything
+      config:
+        # cliPath: 'C:\path\to\craft-anything-cli.exe'   # override CLI discovery
+        # installDir: 'D:\craft-anything'                # override the install root
+        # projectDir: 'D:\craft-anything\work'           # default cwd for craft_cli
+        # projectsRoot: 'D:\craft-anything\projects'     # shown on the status page
+    - id: craft-anything-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: craft
+        transport: stdio
+        command: node
+        args:
+          - '-e'
+          - >-
+            const{spawn}=require('node:child_process'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+            const home=process.env.USERPROFILE||process.env.HOME||os.homedir();
+            const root=process.env.CRAFT_ANYTHING_ROOT||path.join(home,'.dsh','plugins-data','craft-anything');
+            const exe=process.platform==='win32'?'craft-anything-cli.exe':'craft-anything-cli';
+            const cands=[process.env.CRAFT_ANYTHING_CLI,path.join(root,'bin',exe)];
+            const seen=new Set(cands.filter(Boolean));
+            try{for(const d of fs.readdirSync(root,{withFileTypes:true})){if(!d.isDirectory())continue;const p=path.join(root,d.name,exe);if(!seen.has(p))cands.push(p)}}catch{}
+            const cli=cands.find(p=>{try{return Boolean(p)&&fs.statSync(p).isFile()}catch{return false}});
+            if(!cli){console.error('[dsh-craft-anything] craft-anything-cli not found under '+root+' and not on CRAFT_ANYTHING_CLI; run the craft_install tool or scripts/install-cli.ps1, then reload the plugin.');process.exit(2)}
+            const modeFile=path.join(root,'mode.json');
+            const stateFile=path.join(root,'mcp.state.json');
+            const readMode=()=>{try{const m=JSON.parse(fs.readFileSync(modeFile,'utf8'));return m&&m.mode==='deep'?'deep':'clean'}catch{return 'clean'}};
+            const mode=readMode();
+            const extra=(process.env.CRAFT_ANYTHING_MCP_ARGS||'').split(/\s+/).filter(Boolean);
+            const argv=['mcp'].concat(extra).concat([mode==='deep'?'--deep':'--clean-room']);
+            const child=spawn(cli,argv,{stdio:'inherit',windowsHide:true});
+            try{fs.mkdirSync(root,{recursive:true});fs.writeFileSync(stateFile,JSON.stringify({mode,args:argv,pid:child.pid,startedAt:new Date().toISOString()}))}catch{}
+            let stopping=false;
+            const stop=()=>{if(stopping)return;stopping=true;try{child.kill()}catch{}};
+            try{fs.watch(modeFile,{persistent:false},()=>stop())}catch{}
+            const poll=setInterval(()=>{if(readMode()!==mode)stop()},1000);
+            poll.unref();
+            child.on('error',e=>{console.error('[dsh-craft-anything] cannot start '+cli+': '+e.message);process.exit(1)});
+            child.on('exit',(code,sig)=>{clearInterval(poll);process.exit(stopping?0:(code===null?(sig?1:0):code))});
+            for(const s of['SIGTERM','SIGINT','SIGHUP'])process.on(s,stop);
+        toolCallTimeoutMs: 600000
+        failOnStartupError: false
