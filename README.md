@@ -40,7 +40,7 @@
 仓库按语义化版本打**不可移动的标签**（`v0.1.0`、`v0.2.0`…），每个版本一个 GitHub Release；新版本只增加标签、不覆盖旧标签，因此老版本随时可装：
 
 ```powershell
-dsh plugin --profile desktop add github:Fanqi89/dsh-craft-anything#v0.1.0   # 固定版本
+dsh plugin --profile desktop add github:Fanqi89/dsh-craft-anything#v0.1.1   # 固定版本
 dsh plugin --profile desktop add github:Fanqi89/dsh-craft-anything          # 跟 main 最新
 ```
 
