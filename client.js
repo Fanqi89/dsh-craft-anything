@@ -144,8 +144,13 @@ window.__ModuleLoader__.load({
           prerequisites.codingAgent
             ? h('span', { className: 'dsh-ca-mono' }, prerequisites.codingAgent)
             : h('span', { className: 'dsh-ca-warn' }, 'not found on PATH — study tools work, rebuild does not')))
+        const ghidraText = prerequisites.ghidraDetected
+          ? 'detected by the CLI'
+          : prerequisites.ghidra
+            ? `${prerequisites.ghidra} (set, not detected by the CLI)`
+            : 'not configured (optional, Deep mode)'
         rows.push(h(Row, { key: 'ghidra', label: 'Ghidra' },
-          prerequisites.ghidra ? h('span', { className: 'dsh-ca-mono' }, prerequisites.ghidra) : h('span', { className: 'dsh-ca-muted' }, 'not configured (optional, Deep mode)')))
+          h('span', { className: prerequisites.ghidraDetected ? 'dsh-ca-mono' : 'dsh-ca-muted' }, ghidraText)))
         if (Array.isArray(data.notes) && data.notes.length > 0) {
           rows.push(h('ul', { key: 'notes', className: 'dsh-ca-list', style: { marginTop: '6px' } },
             data.notes.map((note, index) => h('li', { key: index }, note))))

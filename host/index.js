@@ -262,6 +262,10 @@ async function statusReport(config = {}) {
   if (!report.prerequisites.codingAgent) {
     report.notes.push('No `claude` coding agent on PATH: study and inspect tools work, but `rebuild` needs a coding agent signed in (see `craft-anything-cli doctor`).')
   }
+  // GHIDRA_INSTALL_DIR being set does not prove the CLI found Ghidra; report both facts.
+  if (report.capabilities && Array.isArray(report.capabilities.enginesFound)) {
+    report.prerequisites.ghidraDetected = report.capabilities.enginesFound.includes('ghidra')
+  }
   return report
 }
 
@@ -287,7 +291,11 @@ function renderStatus(value) {
     value.mcpState && value.mcpState.mode !== value.mode ? ` — note: the running server still reports ${value.mcpState.mode}; it switches on the next reconnect` : ''
   }`)
   lines.push(`  coding agent: ${value.prerequisites.codingAgent || 'not found on PATH'}`)
-  lines.push(`  Ghidra: ${value.prerequisites.ghidra || 'not configured (optional, Deep mode)'}`)
+  lines.push(`  Ghidra: ${value.prerequisites.ghidraDetected
+    ? 'detected by the CLI'
+    : value.prerequisites.ghidra
+      ? `${value.prerequisites.ghidra} (GHIDRA_INSTALL_DIR is set, but the CLI does not detect it)`
+      : 'not configured (optional, Deep mode)'}`)
   if (value.projectsRoot) lines.push(`  projects root: ${value.projectsRoot}`)
   for (const note of value.notes) lines.push(`note: ${note}`)
   return [{ type: 'text', text: lines.join('\n') }]
