@@ -18,6 +18,8 @@
 | **状态工具** `craft_status` | CLI 路径/版本、是否 portable、工具集与工具数量、可用引擎（chromium/gdb/java/objdump…）、Ghidra 与编码智能体是否就绪、MCP 连接方式。结果缓存 5–10 分钟，`refresh:true` 强制重跑。 |
 | **命令运行器** `craft_cli` | 以参数数组直调 CLI（无 shell）：`rebuild`、`doctor`、`setup`、`report`、`triage`、`commands`、`capabilities` 等。长任务可放大 `timeoutMs`；取消/超时会 SIGKILL 兜底，不会挂住工具调用。 |
 | **安装器** `craft_install` | 从 GitHub Releases 下载官方 CLI 到 `~/.dsh/plugins-data/craft-anything/<版本>/`，**解压前校验 SHA256**（对照 release 的 `SHA256SUMS.txt`），已安装则秒回；成功后自动重启 MCP 桥以使用新 CLI（无需重开 DSH）。Windows 用 portable zip（`scripts/install-cli.ps1`），macOS 用官方 universal CLI zip，Linux 用 release tarball（best effort）。 |
+| **中英文切换** | 页面右上角「中文 / English」分段开关，切换整个页面、模式菜单与所有卡片文案；选择记在 localStorage，首次打开跟随浏览器语言（中文系统自动中文）。 |
+| **环境与依赖（一键补齐）** | 新增「环境与依赖」卡：按操作系统自动检查 CLI、Chromium 浏览器、Claude Code 编码智能体、Ghidra、Java 21+、GDB；可自动安装的项右侧直接「一键安装」（后台任务 + 实时日志），手动项「复制命令」；顶部「一键补齐可自动项」一次处理全部缺失项。 |
 | **状态页** | 左侧栏「Craft Anything」图标 → 中央面板显示本地安装、能力、MCP 桥与常用命令；数据来自插件自己的 `GET /craft-anything/api/status`（默认缓存 60 秒，页面手动刷新走 `?full=1`）。 |
 
 截图（DSH 对话框左下角的模式开关、左侧栏入口、状态页）见仓库 Releases / 使用说明；界面文字与状态实时读取本机。
@@ -170,6 +172,13 @@ Host 半边只做三件事：读本地状态、跑本地 CLI、走 DSH 自带的
 - 页面轮询：模式 60 秒、状态 5 分钟，且页面不可见时跳过；不再每 30 秒起两个 CLI 子进程。
 
 ---
+
+### 环境与依赖卡怎么工作
+
+- 检查项来自两个来源：插件自己的探测（CLI 版本、npm/命令是否存在）+ `craft-anything-cli engines_list`（引擎真实 found 路径，和 `doctor`/`capabilities` 同源）。
+- **Ghidra**：如果本机已有 `GHIDRA_INSTALL_DIR`（或安装目录下的 `tools/ghidra_*`），一键安装不走 570 MB 下载，而是把它写进 CLI 设置（`settings_set engines.ghidra.install_dir`），几秒完成；没有现成 Ghidra 时才让 CLI 自己 `engines_install ghidra`（含 Java，耗时几分钟）。
+- **Claude Code**：走 `npm install -g @anthropic-ai/claude-code`（Windows 用 npm 的 JS 入口，避免 `npm.CMD` 的 EINVAL）；装完还要执行一次 `claude` 登录或用 API Key，`rebuild` 才能用。
+- 手动项（Java/GDB/Chromium）给出当前系统对应的命令（winget / brew / apt），点「复制命令」粘贴执行即可。
 
 ## 排障 / 已知坑
 

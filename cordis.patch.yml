@@ -68,8 +68,10 @@
             try{for(const d of fs.readdirSync(root,{withFileTypes:true})){if(!d.isDirectory())continue;const p=path.join(root,d.name,exe);if(!seen.has(p))cands.push(p)}}catch{}
             const cli=cands.find(p=>{try{return Boolean(p)&&fs.statSync(p).isFile()}catch{return false}});
             if(!cli){console.error('[dsh-craft-anything] craft-anything-cli not found under '+root+' and not on CRAFT_ANYTHING_CLI; run the craft_install tool, then reload the plugin.');process.exit(2)}
-            const modeFile=path.join(root,'mode.json'),stateFile=path.join(root,'mcp.state.json'),restartFile=path.join(root,'mcp.restart');
+            const modeFile=path.join(root,'mode.json'),stateFile=path.join(root,'mcp.state.json'),restartFile=path.join(root,'mcp.restart'),envFile=path.join(root,'env.json');
             const startedAtMs=Date.now();
+            let extraEnv={};
+            try{const e=JSON.parse(fs.readFileSync(envFile,'utf8'));if(e&&typeof e==='object'&&!Array.isArray(e))extraEnv=e}catch{}
             const readMode=()=>{try{const m=JSON.parse(fs.readFileSync(modeFile,'utf8'));return m&&m.mode==='deep'?'deep':'clean'}catch{return 'clean'}};
             const mode=readMode();
             let cliMtimeMs=0;try{cliMtimeMs=fs.statSync(cli).mtimeMs}catch{}
@@ -80,7 +82,7 @@
             const extra=(process.env.CRAFT_ANYTHING_MCP_ARGS||'').split(/\s+/).filter(Boolean);
             const argv=['mcp'].concat(extra);
             if(modeFlags)argv.push(mode==='deep'?'--deep':'--clean-room');
-            const child=spawn(cli,argv,{stdio:'inherit',windowsHide:true});
+            const child=spawn(cli,argv,{stdio:'inherit',windowsHide:true,env:Object.assign({},process.env,extraEnv)});
             try{fs.mkdirSync(root,{recursive:true});fs.writeFileSync(stateFile,JSON.stringify({mode,args:argv,pid:child.pid,startedAt:new Date().toISOString(),cli,cliMtimeMs,modeFlags,version}))}catch{}
             let stopping=false,killTimer=null,finalTimer=null;
             const stop=()=>{if(stopping)return;stopping=true;try{child.kill('SIGTERM')}catch{};setTimeout(()=>{try{child.kill('SIGTERM')}catch{}},150).unref();killTimer=setTimeout(()=>{try{child.kill('SIGKILL')}catch{}},1200);finalTimer=setTimeout(()=>process.exit(0),2500);if(killTimer.unref)killTimer.unref();if(finalTimer.unref)finalTimer.unref()};

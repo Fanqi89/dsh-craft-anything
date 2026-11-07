@@ -162,7 +162,7 @@ async function setMode(config, mode) {
 }
 
 function run(command, args, options = {}) {
-  const { cwd, timeoutMs = 120_000, signal, env } = options
+  const { cwd, timeoutMs = 120_000, signal, env, shell, verbatim } = options
   return new Promise((resolve) => {
     const started = Date.now()
     let stdout = ''
@@ -174,6 +174,8 @@ function run(command, args, options = {}) {
       child = spawn(command, args, {
         cwd: cwd || undefined,
         env: env || process.env,
+        shell: shell === true,
+        windowsVerbatimArguments: verbatim === true,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
@@ -276,6 +278,7 @@ async function statusReport(config = {}, options = {}) {
     mcpState: readMcpState(config),
     projectsRoot: config.projectsRoot || null,
     notes: [],
+    noteCodes: [],
   }
   if (!resolved.cli) {
     report.notes.push('craft-anything-cli was not found. Run the craft_install tool, then reload the plugin.')
@@ -293,7 +296,7 @@ async function statusReport(config = {}, options = {}) {
   if (!refresh && probeCache.version && now - probeCache.versionAt < VERSION_TTL_MS) {
     report.version = probeCache.version
   } else {
-    const version = await run(resolved.cli, ['--version'], { timeoutMs: 20_000 })
+    const version = await run(resolved.cli, ['--version'], { timeoutMs: 20_000, env: envForChild(config) })
     report.version = (version.stdout || version.stderr || '').trim().split(/\r?\n/)[0] || null
     probeCache.version = report.version
     probeCache.versionAt = Date.now()
@@ -302,7 +305,7 @@ async function statusReport(config = {}, options = {}) {
   if (!refresh && probeCache.capabilities && now - probeCache.capabilitiesAt < CAPABILITIES_TTL_MS) {
     report.capabilities = probeCache.capabilities
   } else {
-    const capabilities = await run(resolved.cli, ['capabilities'], { timeoutMs: 60_000 })
+    const capabilities = await run(resolved.cli, ['capabilities'], { timeoutMs: 60_000, env: envForChild(config) })
     if (capabilities.code === 0) {
       try {
         const parsed = JSON.parse(capabilities.stdout)
@@ -331,6 +334,7 @@ async function statusReport(config = {}, options = {}) {
   }
   if (!report.prerequisites.codingAgent) {
     report.notes.push('No `claude` coding agent on PATH: study and inspect tools work, but `rebuild` needs a coding agent signed in (see `craft-anything-cli doctor`).')
+    report.noteCodes.push('no-coding-agent')
   }
   // GHIDRA_INSTALL_DIR being set does not prove the CLI found Ghidra; report both facts.
   if (report.capabilities && Array.isArray(report.capabilities.enginesFound)) {
@@ -340,6 +344,7 @@ async function statusReport(config = {}, options = {}) {
   // started with. Say so instead of silently reporting one version for two processes.
   if (report.mcpState && report.mcpState.version && report.version && !report.version.includes(report.mcpState.version)) {
     report.notes.push(`The MCP bridge is still running craft-anything ${report.mcpState.version} while the host tools already use ${report.version}; switch mode or reinstall once and the bridge restarts into ${report.version}.`)
+    report.noteCodes.push('bridge-version-mismatch')
   }
   return report
 }
@@ -440,7 +445,7 @@ function cliTool(config) {
       const timeoutMs = Number.isFinite(args?.timeoutMs) ? Math.max(0, Math.trunc(args.timeoutMs)) : 120_000
       const cwd = args?.cwd ? path.resolve(String(args.cwd)) : (config.projectDir || undefined)
       const maxChars = Math.min(60_000, Math.max(500, Number.isFinite(args?.maxOutputChars) ? Math.trunc(args.maxOutputChars) : 6_000))
-      const result = await run(resolved.cli, argv, { cwd, timeoutMs, signal: exec?.signal })
+      const result = await run(resolved.cli, argv, { cwd, timeoutMs, signal: exec?.signal, env: envForChild(config) })
       const command = [resolved.cli, ...argv].map((part) => (/[\s"]/.test(part) ? JSON.stringify(part) : part)).join(' ')
       const trim = (text) => {
         const value = text.trimEnd()
@@ -482,23 +487,8 @@ function installTool(config) {
       const version = typeof args?.version === 'string' && args.version.trim() ? args.version.trim() : 'latest'
       const output = []
       let result
-      if (IS_WINDOWS) {
-        if (!existsFile(INSTALLER)) throw new Error(`installer script is missing from the plugin package: ${INSTALLER}`)
-        const argv = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', INSTALLER, '-Version', version]
-        if (args?.force) argv.push('-Force')
-        if (config.installDir) argv.push('-Root', config.installDir)
-        result = await run('powershell.exe', argv, { timeoutMs: 900_000, signal: exec?.signal })
-        output.push(result.stdout, result.stderr)
-      } else {
-        // macOS / Linux: the same download+verify+unpack flow implemented without PowerShell.
-        if (!existsFile(INSTALLER_NODE)) throw new Error(`installer script is missing from the plugin package: ${INSTALLER_NODE}`)
-        const argv = [INSTALLER_NODE, '--version', version]
-        if (args?.force) argv.push('--force')
-        if (config.installDir) argv.push('--root', config.installDir)
-        const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
-        result = await run(process.execPath, argv, { timeoutMs: 900_000, signal: exec?.signal, env })
-        output.push(result.stdout, result.stderr)
-      }
+      result = await runCliInstaller(config, { version, force: Boolean(args?.force), signal: exec?.signal })
+      output.push(result.stdout, result.stderr)
       const text = output.filter(Boolean).join('\n').trimEnd()
       const payload = {
         ok: result.code === 0,
@@ -671,6 +661,451 @@ async function refreshStatus(settings) {
   return report
 }
 
+// --- environment & dependencies ---------------------------------------------------------------
+// The page shows a platform-aware checklist and can run one-click installs from the Host half.
+// Only installs this plugin can really perform are marked `auto: true`; everything else carries
+// the exact command for the current OS and is copied to the clipboard from the page.
+
+const ENV_ROUTE = '/craft-anything/api/env'
+const ENV_FILE = 'env.json'
+
+function envFile(config = {}) {
+  return path.join(installRoot(config), ENV_FILE)
+}
+
+function readEnvFile(config = {}) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(envFile(config), 'utf8'))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const env = {}
+    for (const [key, value] of Object.entries(parsed)) {
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && typeof value === 'string' && value) env[key] = value
+    }
+    return env
+  } catch {
+    return {}
+  }
+}
+
+function writeEnvFile(config, patch) {
+  const merged = { ...readEnvFile(config), ...patch }
+  fs.mkdirSync(installRoot(config), { recursive: true })
+  fs.writeFileSync(envFile(config), `${JSON.stringify(merged, null, 2)}\n`)
+  return merged
+}
+
+/** Environment for spawned CLI processes: the Harness env plus install-time overrides. */
+function envForChild(config = {}) {
+  return { ...process.env, ...readEnvFile(config) }
+}
+
+function proxyUrl() {
+  return process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy || ''
+}
+
+function invalidateProbes() {
+  probeCache.cli = null
+  probeCache.version = null
+  probeCache.versionAt = 0
+  probeCache.capabilities = null
+  probeCache.capabilitiesAt = 0
+  statusCache = { at: 0, report: null }
+  whichCache.clear()
+}
+
+const envJobs = new Map()
+
+function envJobsSnapshot() {
+  return [...envJobs.values()].map((job) => ({
+    id: job.id,
+    status: job.status,
+    startedAt: job.startedAt,
+    updatedAt: job.updatedAt,
+    detail: job.detail || '',
+    error: job.error || null,
+    log: job.log.slice(-30).join('\n'),
+  }))
+}
+
+function jobLog(job, line) {
+  const text = String(line == null ? '' : line).slice(0, 2000)
+  if (!text) return
+  for (const part of text.split(/\r?\n/)) {
+    if (!part.trim()) continue
+    job.log.push(part.slice(0, 500))
+  }
+  if (job.log.length > 80) job.log.splice(0, job.log.length - 80)
+  job.updatedAt = new Date().toISOString()
+}
+
+function jobDetail(job, detail) {
+  job.detail = String(detail || '').slice(0, 400)
+  job.updatedAt = new Date().toISOString()
+}
+
+function startEnvJob(config, id, runner) {
+  const existing = envJobs.get(id)
+  if (existing && existing.status === 'running') return existing
+  const job = {
+    id,
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    detail: '',
+    error: null,
+    log: [],
+  }
+  envJobs.set(id, job)
+  runner(job)
+    .then(() => {
+      job.status = 'done'
+      job.updatedAt = new Date().toISOString()
+      invalidateProbes()
+    })
+    .catch((error) => {
+      job.status = 'error'
+      job.error = String(error && error.message ? error.message : error).slice(0, 800)
+      job.updatedAt = new Date().toISOString()
+      jobLog(job, `error: ${job.error}`)
+      invalidateProbes()
+    })
+  return job
+}
+
+function manualCommandFor(id) {
+  if (id === 'java') {
+    if (IS_WINDOWS) return 'winget install --id EclipseAdoptium.Temurin.21.JDK -e'
+    if (process.platform === 'darwin') return 'brew install --cask temurin@21'
+    return 'sudo apt install openjdk-21-jdk'
+  }
+  if (id === 'gdb') {
+    if (IS_WINDOWS) return 'winget install -e --id MSYS2.MSYS2\npacman -S --needed mingw-w64-ucrt-x86_64-gdb'
+    if (process.platform === 'darwin') return 'brew install gdb'
+    return 'sudo apt install gdb'
+  }
+  if (id === 'chromium') {
+    if (IS_WINDOWS) return 'winget install -e --id Google.Chrome'
+    if (process.platform === 'darwin') return 'brew install --cask google-chrome'
+    return 'sudo apt install chromium'
+  }
+  return ''
+}
+
+const enginesCache = { at: 0, cli: null, data: null }
+
+/** Ground truth for engines and dependencies comes from the CLI itself (engines_list). */
+async function enginesList(config = {}) {
+  const resolved = resolveCli(config)
+  if (!resolved.cli) return null
+  const now = Date.now()
+  if (enginesCache.data && enginesCache.cli === resolved.cli && now - enginesCache.at < 120_000) return enginesCache.data
+  const result = await run(resolved.cli, ['engines_list', '--json', '{}'], { timeoutMs: 30_000, env: envForChild(config) })
+  if (result.code !== 0) return null
+  try {
+    const parsed = JSON.parse(result.stdout)
+    const data = parsed && parsed.result ? parsed.result : parsed
+    enginesCache.cli = resolved.cli
+    enginesCache.at = Date.now()
+    enginesCache.data = data
+    return data
+  } catch {
+    return null
+  }
+}
+
+function invalidateEngines() {
+  enginesCache.cli = null
+  enginesCache.at = 0
+  enginesCache.data = null
+}
+
+/** Ghidra headless launcher inside a folder (the folder itself may hold a ghidra_* child). */
+function ghidraLauncherIn(dir) {
+  if (!dir) return null
+  try { if (fs.statSync(dir).isFile()) return dir } catch { return null }
+  const names = ['analyzeHeadless.bat', 'analyzeHeadless']
+  for (const name of names) {
+    const candidate = path.join(dir, 'support', name)
+    if (existsFile(candidate)) return candidate
+  }
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      for (const name of names) {
+        const candidate = path.join(dir, entry.name, 'support', name)
+        if (existsFile(candidate)) return candidate
+      }
+    }
+  } catch { /* unreadable folder: not a candidate */ }
+  return null
+}
+
+async function installCliInto(config, job, options = {}) {
+  const version = options.version || 'latest'
+  jobDetail(job, `installing craft-anything-cli (${version})`)
+  jobLog(job, `installing craft-anything-cli (${version})`)
+  const result = await runCliInstaller(config, { version, force: Boolean(options.force), signal: options.signal })
+  jobLog(job, [result.stdout, result.stderr].filter(Boolean).join('\n'))
+  if (result.code !== 0) throw new Error(`installer exited ${result.code}: ${(result.stderr || '').trim().slice(0, 400)}`)
+  try { fs.writeFileSync(path.join(installRoot(config), 'mcp.restart'), `${new Date().toISOString()}\n`) } catch { /* best effort */ }
+  jobLog(job, 'done; the MCP bridge restarts onto the new CLI')
+}
+
+async function runCliInstaller(config, options = {}) {
+  const version = options.version || 'latest'
+  const force = Boolean(options.force)
+  const signal = options.signal
+  if (IS_WINDOWS) {
+    if (!existsFile(INSTALLER)) throw new Error(`installer script is missing from the plugin package: ${INSTALLER}`)
+    const argv = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', INSTALLER, '-Version', version]
+    if (force) argv.push('-Force')
+    if (config.installDir) argv.push('-Root', config.installDir)
+    return run('powershell.exe', argv, { timeoutMs: 900_000, signal })
+  }
+  if (!existsFile(INSTALLER_NODE)) throw new Error(`installer script is missing from the plugin package: ${INSTALLER_NODE}`)
+  const argv = [INSTALLER_NODE, '--version', version]
+  if (force) argv.push('--force')
+  if (config.installDir) argv.push('--root', config.installDir)
+  const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
+  return run(process.execPath, argv, { timeoutMs: 900_000, signal, env })
+}
+
+async function installCodingAgentInto(config, job) {
+  const npm = which('npm') || which('npm.cmd') || which('npm.exe')
+  const packageName = '@anthropic-ai/claude-code'
+  const runNpmInstall = async (command, argv) => {
+    jobDetail(job, 'installing the Claude Code CLI')
+    jobLog(job, command + ' ' + argv.join(' '))
+    // Windows: npm.CMD cannot be spawned directly (Node refuses .cmd without a shell, and the
+    // shell path needs quoting), so run npm own JS entry through the Harness Node instead.
+    let result
+    const npmJs = /[\\/]npm(\.cmd|\.exe)?$/i.test(command)
+      ? path.join(path.dirname(command), 'node_modules', 'npm', 'bin', 'npm-cli.js')
+      : null
+    if (npmJs && existsFile(npmJs)) {
+      result = await run(process.execPath, [npmJs, ...argv], {
+        timeoutMs: 900_000,
+        env: { ...envForChild(config), ELECTRON_RUN_AS_NODE: '1' },
+      })
+    } else {
+      result = await run(command, argv, { timeoutMs: 900_000, env: envForChild(config) })
+    }
+    jobLog(job, [result.stdout, result.stderr].filter(Boolean).join('\n'))
+    if (result.code !== 0) throw new Error(command + ' exited ' + result.code + ': ' + (result.stderr || '').trim().slice(0, 400))
+  }
+  if (npm) {
+    await runNpmInstall(npm, ['install', '-g', packageName])
+    jobLog(job, 'done; sign in once with `claude` (or set an API key) before rebuild can use it')
+    return
+  }
+  const pnpmScript = path.join(path.dirname(process.execPath), 'resources', 'runtime', 'pnpm', 'bin', 'pnpm.mjs')
+  if (existsFile(pnpmScript)) {
+    jobLog(job, 'npm is not on PATH; using the pnpm shipped with the Harness')
+    await runNpmInstall(process.execPath, [pnpmScript, 'add', '-g', packageName])
+    jobLog(job, 'If `claude` is still not found, add the pnpm global bin directory to PATH (`pnpm bin -g`).')
+    jobLog(job, 'Sign in once with `claude` before rebuild can use it.')
+    return
+  }
+  throw new Error('Neither npm nor the Harness pnpm wrapper was found. Install Node.js/npm first, then retry.')
+}
+
+async function installGhidraInto(config, job) {
+  const resolved = resolveCli(config)
+  if (!resolved.cli) throw new Error('craft-anything-cli is not installed; install the CLI first')
+  // Prefer a Ghidra that is already on this machine (no 570 MB download): point the CLI own
+  // setting at it. The CLI then reports it through engines_list, capabilities and doctor.
+  const candidates = []
+  for (const value of [envForChild(config).GHIDRA_INSTALL_DIR, readEnvFile(config).GHIDRA_INSTALL_DIR]) {
+    if (value) candidates.push(value)
+  }
+  const toolsDir = path.join(installRoot(config), 'tools')
+  try {
+    for (const entry of fs.readdirSync(toolsDir, { withFileTypes: true })) {
+      if (entry.isDirectory() && /ghidra/i.test(entry.name)) candidates.push(path.join(toolsDir, entry.name))
+    }
+  } catch { /* no tools folder */ }
+  const existing = candidates.find((dir) => ghidraLauncherIn(dir))
+  if (existing) {
+    const launcher = ghidraLauncherIn(existing)
+    jobDetail(job, 'configuring the existing Ghidra')
+    jobLog(job, 'found an existing Ghidra: ' + launcher)
+    const set = await run(resolved.cli, ['settings_set', '--json', JSON.stringify({ key: 'engines.ghidra.install_dir', value: existing })], { timeoutMs: 60_000, env: envForChild(config) })
+    jobLog(job, [set.stdout, set.stderr].filter(Boolean).join('\n'))
+    if (set.code !== 0) throw new Error('settings_set failed: ' + (set.stderr || '').trim().slice(0, 400))
+    invalidateEngines()
+    invalidateProbes()
+    jobLog(job, 'Ghidra configured; the CLI now reports it as installed')
+    return
+  }
+  jobDetail(job, 'asking the CLI to install Ghidra (large download)')
+  jobLog(job, 'no Ghidra found on this machine; asking the CLI to install Ghidra and its Java (large download, several minutes)')
+  const install = await run(resolved.cli, ['engines_install', '--json', JSON.stringify({ engine: 'ghidra' })], { timeoutMs: 3_600_000, env: envForChild(config) })
+  jobLog(job, [install.stdout, install.stderr].filter(Boolean).join('\n'))
+  if (install.code !== 0) throw new Error('engines_install exited ' + install.code + ': ' + (install.stdout || install.stderr || '').trim().slice(0, 400))
+  invalidateEngines()
+  invalidateProbes()
+  const data = await enginesList(config)
+  const engine = data && Array.isArray(data.engines) ? data.engines.find((item) => item.id === 'ghidra') : null
+  if (!engine || !engine.found) throw new Error('the CLI finished but still does not report Ghidra as installed')
+  jobLog(job, 'Ghidra installed: ' + engine.found)
+}
+
+const AUTO_INSTALLABLE = new Set(['cli', 'coding-agent', 'ghidra'])
+
+function startEnvJobById(config, id) {
+  if (!AUTO_INSTALLABLE.has(id)) return null
+  if (id === 'cli') return startEnvJob(config, 'cli', (job) => installCliInto(config, job, { version: 'latest' }))
+  if (id === 'coding-agent') return startEnvJob(config, 'coding-agent', (job) => installCodingAgentInto(config, job))
+  return startEnvJob(config, 'ghidra', (job) => installGhidraInto(config, job))
+}
+
+﻿async function envReport(config = {}) {
+  const resolved = resolveCli(config)
+  const status = await statusReport(config) // cached probes: cheap after the first call
+  const data = resolved.cli ? await enginesList(config) : null
+  const engines = data && Array.isArray(data.engines) ? data.engines : []
+  const findEngine = (id) => engines.find((item) => item && item.id === id) || null
+  const foundOf = (id) => {
+    const engine = findEngine(id)
+    return engine && engine.found ? String(engine.found) : null
+  }
+  const envValues = readEnvFile(config)
+  const agent = which('claude') || which('claude.cmd')
+  const npm = which('npm') || which('npm.cmd') || which('npm.exe')
+  const ghidra = findEngine('ghidra')
+  const ghidraFound = foundOf('ghidra')
+  const chromiumFound = foundOf('chromium')
+  const javaFound = foundOf('java')
+  const gdbFound = foundOf('gdb')
+  const checks = [
+    {
+      id: 'cli',
+      group: 'core',
+      auto: true,
+      label: { en: 'craft-anything CLI', zh: 'craft-anything CLI' },
+      hint: { en: 'The local CLI behind every mcp__craft__* tool.', zh: '所有 mcp__craft__* 工具背后的本地 CLI。' },
+      state: resolved.cli ? 'ok' : 'missing',
+      detail: resolved.cli ? `${status.version || 'installed'}${status.portable ? ' · portable' : ''}` : 'not installed',
+    },
+    {
+      id: 'chromium',
+      group: 'core',
+      auto: false,
+      label: { en: 'Chromium based browser', zh: 'Chromium 内核浏览器' },
+      hint: { en: 'Used by the browser recording and inspection tools.', zh: '浏览器录制/检查工具需要它。' },
+      state: chromiumFound ? 'ok' : 'missing',
+      detail: chromiumFound || 'not detected by the CLI',
+      command: manualCommandFor('chromium'),
+    },
+    {
+      id: 'coding-agent',
+      group: 'deep',
+      auto: true,
+      label: { en: 'Coding agent (Claude Code)', zh: '编码智能体（Claude Code）' },
+      hint: { en: 'Needed for rebuild; study and inspect tools work without it.', zh: 'rebuild 需要它；只用研究与检查工具可以不装。' },
+      state: agent ? 'ok' : 'missing',
+      detail: agent || (npm ? `npm found: ${npm}` : 'npm not on PATH (the Harness pnpm fallback will be used)'),
+    },
+    {
+      id: 'ghidra',
+      group: 'deep',
+      auto: true,
+      label: { en: 'Ghidra (native decompiling)', zh: 'Ghidra（原生反编译）' },
+      hint: {
+        en: 'Reuses an existing Ghidra (GHIDRA_INSTALL_DIR) by pointing the CLI at it; otherwise the CLI downloads Ghidra and its Java (large, several minutes).',
+        zh: '优先复用本机已有的 Ghidra（GHIDRA_INSTALL_DIR）并写入 CLI 设置；没有时由 CLI 自动下载 Ghidra 与自带 Java（较大，需几分钟）。',
+      },
+      state: ghidraFound ? 'ok' : 'missing',
+      detail: ghidraFound || (ghidra && ghidra.installable_here ? 'not installed (the CLI can install it here)' : 'not installed'),
+    },
+    {
+      id: 'java',
+      group: 'deep',
+      auto: false,
+      label: { en: 'Java 21+', zh: 'Java 21+' },
+      hint: { en: 'Runtime required by Ghidra.', zh: 'Ghidra 需要的运行时。' },
+      state: javaFound ? 'ok' : 'missing',
+      detail: javaFound || 'not detected by the CLI',
+      command: manualCommandFor('java'),
+    },
+    {
+      id: 'gdb',
+      group: 'deep',
+      auto: false,
+      label: { en: 'GDB', zh: 'GDB' },
+      hint: { en: 'Debugger used by some native analysis tools.', zh: '部分原生分析工具用到的调试器。' },
+      state: gdbFound ? 'ok' : 'missing',
+      detail: gdbFound || 'not detected by the CLI',
+      command: manualCommandFor('gdb'),
+    },
+  ]
+  return {
+    ok: true,
+    platform: `${process.platform}-${process.arch}`,
+    envFile: envFile(config),
+    envValues,
+    engineStore: data && data.engine_store ? String(data.engine_store) : null,
+    deepMode: data && data.deep_mode ? data.deep_mode : null,
+    jobs: envJobsSnapshot(),
+    checks,
+  }
+}
+
+function envRouteHandler(getSettings) {
+  return async (req, res) => {
+    const send = (code, payload) => {
+      res.statusCode = code
+      res.setHeader('content-type', 'application/json; charset=utf-8')
+      res.setHeader('cache-control', 'no-store')
+      res.end(JSON.stringify(payload))
+    }
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      try {
+        // Manual refresh (page Refresh button) bypasses the engines cache so a dependency that was
+        // installed outside the page is picked up immediately.
+        if (typeof req.url === 'string' && /[?&]full=1(?:&|$)/.test(req.url)) invalidateEngines()
+        send(200, await envReport(getSettings()))
+      } catch (error) {
+        send(500, { ok: false, error: String(error && error.message ? error.message : error) })
+      }
+      return
+    }
+    if (req.method !== 'POST') {
+      send(405, { ok: false, error: 'GET or POST only' })
+      return
+    }
+    const body = await readJsonBody(req, 64 * 1024)
+    const action = body && typeof body.action === 'string' ? body.action : ''
+    const settings = getSettings()
+    try {
+      if (action === 'install') {
+        const id = body && typeof body.id === 'string' ? body.id : ''
+        const job = id ? startEnvJobById(settings, id) : null
+        if (!job) {
+          send(400, { ok: false, error: `no automatic install for "${id}"; use the command shown on the page` })
+          return
+        }
+        send(200, { ok: true, started: [job.id], jobs: envJobsSnapshot() })
+        return
+      }
+      if (action === 'fix-all') {
+        const report = await envReport(settings)
+        const wanted = report.checks.filter((check) => check.auto && check.state !== 'ok').map((check) => check.id)
+        const started = []
+        for (const id of wanted) {
+          const job = startEnvJobById(settings, id)
+          if (job) started.push(job.id)
+        }
+        send(200, { ok: true, started, jobs: envJobsSnapshot() })
+        return
+      }
+      send(400, { ok: false, error: 'body must be {"action":"install","id":"..."} or {"action":"fix-all"}' })
+    } catch (error) {
+      send(500, { ok: false, error: String(error && error.message ? error.message : error) })
+    }
+  }
+}
+
 export function apply(ctx, config) {
   // A patch row with only comments parses as `config: null`, so normalize both null and
   // undefined before reading the knobs.
@@ -708,6 +1143,10 @@ export function apply(ctx, config) {
     webCtx.effect(
       () => webCtx.webServer.register({ kind: 'exact', path: MODE_ROUTE, handler: modeRouteHandler(() => settings) }),
       'dsh-craft-anything: mode route',
+    )
+    webCtx.effect(
+      () => webCtx.webServer.register({ kind: 'exact', path: ENV_ROUTE, handler: envRouteHandler(() => settings) }),
+      'dsh-craft-anything: environment route',
     )
   })
 }

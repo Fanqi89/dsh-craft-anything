@@ -1,5 +1,37 @@
 # 更新日志
 
+## [v0.3.0] - 2026-11-07
+
+页面双语 + 环境与依赖一键补齐。功能行为与 v0.2.0 相同，新增的是界面能力和安装自动化。
+
+### 新增
+
+- **中英文切换**：页面右上角「中文 / English」分段开关，切换标题/说明/本地安装/MCP 桥/工作流命令/环境与依赖全部文案，以及模式菜单与对话框左下角模式开关；选择存 localStorage，首次打开跟随浏览器语言。中文文案包含模式菜单、状态说明、环境提示与按钮。
+- **环境与依赖卡（按操作系统检查 + 一键补齐）**：
+  - 检查项：craft-anything CLI、Chromium 内核浏览器、Claude Code 编码智能体、Ghidra、Java 21+、GDB；核心 / 深度模式两组。
+  - 判定来源：插件探测 + `craft-anything-cli engines_list --json`（与 `doctor`/`capabilities` 同源的 found 路径），结果缓存 2 分钟，页面「刷新」走 `?full=1` 强制重查。
+  - 自动项：CLI（复用 v0.2.0 安装器）、Claude Code（`npm install -g @anthropic-ai/claude-code`，Windows 走 npm 的 JS 入口避开 `npm.CMD` 的 spawn EINVAL；npm 缺失时回退 DSH 自带 pnpm）、Ghidra（优先把现成 `GHIDRA_INSTALL_DIR` / `tools/ghidra_*` 通过 `settings_set engines.ghidra.install_dir` 写进 CLI，几秒完成；没有现成安装才让 CLI `engines_install ghidra` 下载 Ghidra+Java）。
+  - 手动项：Java / GDB / Chromium 给出当前系统命令（winget / brew / apt），「复制命令」一键复制。
+  - 后台任务：POST 立即返回 job，页面 2.5 秒轮询显示进度日志与失败原因；安装完成自动刷新状态卡与检查项；顶部「Install all fixable / 一键补齐可自动项」一次处理全部缺失自动项。
+- 新增 HTTP 路由 `GET/POST /craft-anything/api/env`（GET 返回检查项+job 快照，POST `{"action":"install","id"}` 或 `{"action":"fix-all"}`）。
+
+### 修复
+
+- 环境接口首次实现时 `report.noteCodes` 未初始化，GET /api/env 返回 500（`Cannot read properties of undefined (reading 'push')`）——已初始化并按需写入，状态工具输出保持英文 notes 不变。
+- `npm.CMD` 在 Node 下直接 spawn 报 `EINVAL`，经 `cmd.exe` 又因 /s 去引号失败——改为用 DSH 自带 Node 执行 `node_modules/npm/bin/npm-cli.js`，实测安装 Claude Code 成功并出现在 PATH（`%APPDATA%\npm\claude.CMD`）。
+- 页面「刷新」现在绕过 engines 缓存；环境任务完成后自动刷新本地安装卡。
+
+### 兼容性
+
+- `engines.dsh` 仍为 `>=0.2.1-rc.2`；新代码只用既有 API（`ctx.inject(['webServer'])` 路由、普通 Client ESM），0.2.1-rc.2 / 0.2.1-rc.5 / 0.2.2-rc.1 均适用。
+- 本机实测：DSH 0.2.1-rc.5 + craft-anything 0.5.0，Windows：环境卡 6/6 就绪；Ghidra「缺失 → 点击 Install → 已就绪」真机点击验证；Claude Code 后台安装完成；中英文切换与页面持久化真机验证。
+
+### 已知限制
+
+- Ghidra 的 `engines_install`（无现成安装时的 570 MB 下载 + 自带 Java）本次未在本机完整跑通——本机已有 `C:\tools\ghidra_12.1.4_PUBLIC`，走的是「复用现成安装」路径；下载路径按 CLI 自身工具实现编写，需在无 Ghidra 的机器上再验一次。
+- macOS/Linux 的自动安装（npm/pnpm、`settings_set`）未真机验证；命令均按平台分支编写。
+- Claude Code 安装完成后仍需登录（`claude`）或配置 API Key，`rebuild` 才能使用；npm 可能提示 `allow-scripts`（claude 的 postinstall 未跑），如遇原生依赖缺失可手动放行一次。
+
 ## [v0.2.0] - 2026-11-07
 
 稳定性、跨平台与性能版本：修掉 macOS 上安装/启用本插件会把 DSH 卡死的问题，补齐 macOS/Linux 的 CLI 安装，并针对 DSH **0.2.1-rc.2（新下限）** / 0.2.1-rc.5 / 0.2.2-rc.1 做兼容性与性能核对。插件功能与 v0.1.x 相同。
