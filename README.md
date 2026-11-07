@@ -14,11 +14,11 @@
 | 能力 | 说明 |
 |---|---|
 | **MCP 桥** | 用 DSH 自带的 `@deepseek-ai/dsh-mcp-client` 连接本地 `craft-anything-cli mcp`，工具名 `mcp__craft__core_target_open` 等。默认暴露 Essentials（30 个工具）；深度模式 38 个；运行时用 `mcp__craft__list_toolsets` / `mcp__craft__enable_toolset` 按需加载 native / browser / android / java / managed / formats 等工具集。 |
-| **模式切换（净室 ⇄ 深度）** | DSH 对话框左下角工具行里的下拉开关（「净室模式 / 深度模式」，紧邻其它插件的模式开关但不重叠）；也可用 `craft_mode` 工具切换。切换会写入 `mode.json` 并重启 MCP 服务进程，`dsh-mcp-client` 自动重连，工具列表 1–2 秒内在新模式重新同步。 |
-| **状态工具** `craft_status` | CLI 路径/版本、是否 portable、工具集与工具数量、可用引擎（chromium/gdb/java/objdump…）、Ghidra 与编码智能体是否就绪、MCP 连接方式。 |
-| **命令运行器** `craft_cli` | 以参数数组直调 CLI（无 shell）：`rebuild`、`doctor`、`setup`、`report`、`triage`、`commands`、`capabilities` 等。长任务可放大 `timeoutMs`，取消时子进程会被杀掉。 |
-| **安装器** `craft_install` | 从 GitHub Releases 下载官方 Windows portable 包到 `%USERPROFILE%\.dsh\plugins-data\craft-anything\<版本>\`，**解压前校验 SHA256**（对照 release 的 `SHA256SUMS.txt`），已安装则秒回。 |
-| **状态页** | 左侧栏「Craft Anything」图标 → 中央面板显示本地安装、能力、MCP 桥与常用命令；数据来自插件自己的 `GET /craft-anything/api/status`。 |
+| **模式切换（净室 ⇄ 深度）** | DSH 对话框左下角工具行里的下拉开关（「净室模式 / 深度模式」，紧邻其它插件的模式开关但不重叠）；也可用 `craft_mode` 工具切换。切换会写入 `mode.json` 并重启 MCP 服务进程，`dsh-mcp-client` 自动重连，工具列表 1–2 秒内在新模式重新同步。重启使用「SIGTERM → 1.5 秒 SIGKILL → 3 秒强制退出」的兜底，进程不响应信号也不会把 DSH 拖住。 |
+| **状态工具** `craft_status` | CLI 路径/版本、是否 portable、工具集与工具数量、可用引擎（chromium/gdb/java/objdump…）、Ghidra 与编码智能体是否就绪、MCP 连接方式。结果缓存 5–10 分钟，`refresh:true` 强制重跑。 |
+| **命令运行器** `craft_cli` | 以参数数组直调 CLI（无 shell）：`rebuild`、`doctor`、`setup`、`report`、`triage`、`commands`、`capabilities` 等。长任务可放大 `timeoutMs`；取消/超时会 SIGKILL 兜底，不会挂住工具调用。 |
+| **安装器** `craft_install` | 从 GitHub Releases 下载官方 CLI 到 `~/.dsh/plugins-data/craft-anything/<版本>/`，**解压前校验 SHA256**（对照 release 的 `SHA256SUMS.txt`），已安装则秒回；成功后自动重启 MCP 桥以使用新 CLI（无需重开 DSH）。Windows 用 portable zip（`scripts/install-cli.ps1`），macOS 用官方 universal CLI zip，Linux 用 release tarball（best effort）。 |
+| **状态页** | 左侧栏「Craft Anything」图标 → 中央面板显示本地安装、能力、MCP 桥与常用命令；数据来自插件自己的 `GET /craft-anything/api/status`（默认缓存 60 秒，页面手动刷新走 `?full=1`）。 |
 
 截图（DSH 对话框左下角的模式开关、左侧栏入口、状态页）见仓库 Releases / 使用说明；界面文字与状态实时读取本机。
 
@@ -28,12 +28,13 @@
 
 ### 前置
 
-- DeepSeek Harness 桌面版 **0.2.0-rc.2 或更新**（`package.json` 的 `engines.dsh` 与 `dsh.plugin.json` 都声明 `>=0.2.0-rc.2`；依赖它自带的 `@deepseek-ai/dsh-mcp-client`）。
-  - Host 侧（MCP 桥、四个工具、HTTP 路由）在 0.2.0-rc.2 起的版本可用；
-  - 界面侧（左侧栏入口、状态页、对话框左下角模式开关）在 0.2.1-rc.5 上真机验证过；更老的 Harness 若没有对应槽位，这几块**自动不出现**，其余功能不受影响。
-- Node.js ≥ 22（MCP 启动器用 `node -e` 运行，DSH 自带 Node 亦可）。
+- DeepSeek Harness 桌面版 **0.2.1-rc.2 或更新**（`package.json` 的 `engines.dsh` 与 `dsh.plugin.json` 都声明 `>=0.2.1-rc.2`；依赖它自带的 `@deepseek-ai/dsh-mcp-client`）。
+  - Host 侧（MCP 桥、四个工具、HTTP 路由）自 0.2.1-rc.2 起可用；
+  - 界面侧（左侧栏入口、状态页、对话框左下角模式开关）在 0.2.1-rc.5 上真机验证过；更老的 Harness 若没有对应槽位，这几块**自动不出现**，其余功能不受影响；
+  - 0.2.2-rc1 及以后：插件只用稳定 API（`ctx.tools.register`、`ctx.effect`、`ctx.inject(['webServer'])`、`slots.inject/register`、`window.__ModuleLoader__`），没有依赖已废弃的私有接口；API 若有变化会在 [CHANGELOG](CHANGELOG.md) 里注明并跟随发版。
+- **不需要单独安装 Node**：MCP 启动器以 `command: !!js process.execPath` + `ELECTRON_RUN_AS_NODE=1` 运行在 DSH 自带的 Node 上（Windows/macOS/Linux 一致）。若某个 DSH 构建关闭了 Electron 的 RunAsNode fuse，把该行的 `command` 改成 `node` 并确保 PATH 里有 Node（见「排障」）。
 - 想用 `rebuild` 的话另需一个编码智能体（如 Claude Code）或 API Key；只做「研究/分析」不需要。
-- Windows 下 `craft_install` 会自动下载 CLI；macOS/Linux 请自行安装 CLI 后设置 `CRAFT_ANYTHING_CLI`。
+- `craft_install` 支持 Windows（portable zip）、macOS（官方 universal CLI zip）、Linux（release tarball，best effort）；都带 SHA256 校验。
 
 ### 版本与安装指定版本
 
@@ -151,10 +152,40 @@ Host 半边只做三件事：读本地状态、跑本地 CLI、走 DSH 自带的
 
 ---
 
-## 已知限制
+## 兼容性
 
-- **自动安装仅 Windows**：下载的是官方 `windows-x64-portable` 包；其它平台请按上游 README 安装后设置 `CRAFT_ANYTHING_CLI`。
-- **模式切换 = 重启 MCP 服务**：上游 MCP 服务在启动时确定净室/深度，插件靠「写模式文件 → 启动器退出子进程 → dsh-mcp-client 重连」实现切换；切换瞬间的在途调用会失败。
+| 项目 | 状态 |
+|---|---|
+| DSH **0.2.1-rc.2**（下限） | 逐包比对 npm 产物：`dsh-tools@0.2.1-rc.2` 与 rc.5 **byte-identical**（工具注册/JSON-Schema 校验同源）；`dsh-client-ui-slots` byte-identical；`dsh-mcp-client@0.2.1-rc.2` 仅在 resource-list 能力判断上有差异，**配置 schema（serverName/reconnect/toolCallTimeoutMs/failOnStartupError）完全一致** → 插件兼容 |
+| DSH 0.2.2-rc1+ | 只用稳定 API，无私有字段依赖；未在 0.2.2-rc1 上真机跑过（该版本未在本机安装）。如果官方改了槽位或注册签名，插件会按 [RELEASING.md](RELEASING.md) 发新版本跟进 |
+| Windows | 完整验证（CLI 安装、MCP、模式切换、状态页、发布脚本） |
+| macOS | 启动器与安装器已按 macOS 适配（Electron-as-Node、universal CLI zip、SIGKILL 兜底）；**本机无 Mac，未做真机验证**——见下方「macOS 卡死」修复说明 |
+| Linux | 安装器按 release tarball best effort；其余逻辑跨平台。未真机验证 |
+
+### 性能
+
+- 状态接口：缓存后 **~20 ms**（首次 ~100 ms），`?full=1` 强制重跑 CLI 探测约 **150 ms**；
+- 模式接口：只读一个 JSON 文件，**~20 ms**；
+- MCP 初始化：新增一次 `--version` 探测（约 40 ms），用于判断是否支持 `--clean-room/--deep`；
+- 页面轮询：模式 60 秒、状态 5 分钟，且页面不可见时跳过；不再每 30 秒起两个 CLI 子进程。
+
+---
+
+## 排障 / 已知坑
+
+**「macOS 上装完插件 DSH 卡死」已修复（v0.2.0）**
+原因不是 UI，而是进程回收：启动器 `stop()` 只发一次 SIGTERM 且只靠 `child.on('exit')` 退出，而 `craft-anything-cli mcp` **故意忽略第一次 SIGTERM**（`main.rs:126-131` 只在第二次信号时 `exit(130)`；`crates/mcp/src/lib.rs:114-133` 的 serve 循环只认 stdin EOF），于是子进程不退、启动器不退、`dsh-mcp-client` 的卸载/重连一直等 → DSH 表现为卡死。Windows 上 `kill('SIGTERM')` 是 `TerminateProcess`，所以只有 macOS/Linux 暴露。修复：`SIGTERM → 150 ms 后再 SIGTERM → 1.2 秒 SIGKILL → 2.5 秒强制退出`，模式切换与信号两条路径共用同一套幂等兜底（deaf 子进程实验：旧逻辑 5 秒后仍存活，新逻辑 1.3 秒退出）。手动安装 CLI 的用户如果遇到 Gatekeeper 提示，对二进制执行 `xattr -d com.apple.quarantine craft-anything-cli`（`craft_install` 下载的文件不带 quarantine 属性）。
+
+**其它已处理的问题**
+- Finder 启动的 DSH 拿不到用户的 `node`：改用 DSH 自带的 Node（`!!js process.execPath` + `ELECTRON_RUN_AS_NODE=1`）。若构建关闭了 RunAsNode fuse，把该行 `command` 改成 `node`。
+- 旧版 CLI 不认识 `--clean-room/--deep`：启动器先跑 `--version` 探测，旧版只传 `mcp`。
+- `craft_cli` 超时/取消只发 SIGTERM，子进程不响应时 Promise 永不返回：现在 SIGKILL 升级 + 2.5 秒兜底 resolve。
+- `CRAFT_ANYTHING_CLI` 指向旧路径时会遮蔽已安装的 CLI：现在回退扫描安装目录。
+- 状态页/工具每次请求起两个 CLI 子进程：改为带 TTL 的缓存，`refresh`/`?full=1` 强制刷新。
+- 插件反复重连看起来像卡住：`reconnect.maxAttempts` 改为 4、最大退避 5 秒，CLI 缺失时快速失败而不是重试几分钟。
+
+**仍存在的限制**
+- **模式切换 = 重启 MCP 服务**：上游 MCP 服务在启动时确定净室/深度，切换瞬间的在途调用会失败。
 - **工具集默认只列 Essentials**：`--all-tools`（107 个）或深度 + 全量（321 个）的 schema 会显著增加每次请求的 token，按需开启。
 - **`rebuild` 需要编码智能体**：本机未检测到 Claude Code / API Key 时，研究与证据类工具照常可用，`rebuild` 会明确失败（`craft-anything-cli doctor` 会说明缺什么）。
 - **研究目标要合法**：只对你拥有或被允许检查的软件使用；上游不绕过 DRM、登录或反作弊。

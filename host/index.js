@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const PACKAGE_DIR = path.resolve(HERE, '..')
 const INSTALLER = path.join(PACKAGE_DIR, 'scripts', 'install-cli.ps1')
+const INSTALLER_NODE = path.join(PACKAGE_DIR, 'scripts', 'install-cli.mjs')
 
 const IS_WINDOWS = process.platform === 'win32'
 const EXE_NAME = IS_WINDOWS ? 'craft-anything-cli.exe' : 'craft-anything-cli'
@@ -60,16 +61,23 @@ function newestFirst(names) {
 function resolveCli(config = {}) {
   const root = config.installDir || process.env.CRAFT_ANYTHING_ROOT || DEFAULT_ROOT
   const explicit = config.cliPath || process.env.CRAFT_ANYTHING_CLI
-  if (explicit) {
-    if (existsFile(explicit)) return { cli: explicit, root, source: 'config' }
-    return { cli: null, root, source: 'config-missing', tried: explicit }
-  }
+  if (explicit && existsFile(explicit)) return { cli: explicit, root, source: 'config' }
+  // A stale CRAFT_ANYTHING_CLI must not hide a working install: fall through to the scan.
   const staged = path.join(root, 'bin', EXE_NAME)
   if (existsFile(staged)) return { cli: staged, root, source: 'bin' }
-  const versioned = newestFirst(listDirs(root)).map((name) => path.join(root, name, EXE_NAME))
+  // Newest version directory wins; dedupe numeric-equivalent names (0.4.0 vs v0.4.0).
+  const seenVersions = new Set()
+  const versioned = newestFirst(listDirs(root))
+    .filter((name) => {
+      const key = name.replace(/^v/i, '')
+      if (seenVersions.has(key)) return false
+      seenVersions.add(key)
+      return true
+    })
+    .map((name) => path.join(root, name, EXE_NAME))
   const found = versioned.find(existsFile)
   if (found) return { cli: found, root, source: 'versioned' }
-  return { cli: null, root, source: 'missing' }
+  return { cli: null, root, source: explicit ? 'config-missing' : 'missing', tried: explicit || undefined }
 }
 
 // --- analysis mode: the MCP server reads its mode once at startup, so the launcher keeps it in
@@ -106,6 +114,9 @@ function readMcpState(config = {}) {
       mode: parsed.mode === 'deep' ? 'deep' : 'clean',
       startedAt: typeof parsed.startedAt === 'string' ? parsed.startedAt : null,
       args: Array.isArray(parsed.args) ? parsed.args.map(String) : [],
+      cli: typeof parsed.cli === 'string' ? parsed.cli : null,
+      version: typeof parsed.version === 'string' ? parsed.version : null,
+      pid: Number.isFinite(parsed.pid) ? parsed.pid : null,
     }
   } catch {
     return null
@@ -122,20 +133,31 @@ async function setMode(config, mode) {
   if (before && before.mode === wanted) {
     return { mode: wanted, changed: false, applied: true, restarted: false, note: 'the MCP server was already running in this mode' }
   }
-  const deadline = Date.now() + 20_000
+  // No state file means the bridge has never started here (no CLI, or the row is off): do not sit
+  // on the HTTP request for 20 s, just persist the mode and say so.
+  if (!before) {
+    return {
+      mode: wanted,
+      changed: true,
+      applied: true,
+      restarted: false,
+      note: 'mode saved; the bridge is not running in this Harness yet, so it will start in this mode next time.',
+    }
+  }
+  const deadline = Date.now() + 8_000
   while (Date.now() < deadline) {
     const state = readMcpState(config)
     if (state && state.mode === wanted) {
       return { mode: wanted, changed: true, applied: true, restarted: true, server: state }
     }
-    await sleep(250)
+    await sleep(200)
   }
   return {
     mode: wanted,
     changed: true,
     applied: false,
     restarted: false,
-    note: 'mode.json was written, but the MCP server has not reported the new mode yet; it reconnects within a few seconds (or start the plugin again).',
+    note: 'mode.json was written, but the MCP server has not confirmed the new mode yet; it reconnects within a few seconds (or start the plugin again).',
   }
 }
 
@@ -159,9 +181,17 @@ function run(command, args, options = {}) {
       resolve({ code: null, stdout, stderr: String(error?.message || error), timedOut: false, error: String(error?.message || error), ms: 0 })
       return
     }
-    const onAbort = () => {
-      if (child && !child.killed) child.kill()
+    const killHard = () => {
+      if (!child) return
+      try { if (!child.killed) child.kill('SIGTERM') } catch { /* already gone */ }
+      // craft-anything exits on the SECOND SIGTERM (its ctrlc handler flushes and exits on the
+      // second signal) and ignores the first, so send a second one, then SIGKILL, then settle
+      // even if the child is still alive. Without this the tool call would hang despite timeout.
+      setTimeout(() => { try { child.kill('SIGTERM') } catch { /* already gone */ } }, 150).unref?.()
+      setTimeout(() => { try { child.kill('SIGKILL') } catch { /* already gone */ } }, 1200).unref?.()
+      setTimeout(() => finish(null, 'killed after timeout'), 2500).unref?.()
     }
+    const onAbort = () => killHard()
     if (signal) {
       if (signal.aborted) onAbort()
       else signal.addEventListener('abort', onAbort, { once: true })
@@ -169,7 +199,7 @@ function run(command, args, options = {}) {
     const timer = timeoutMs > 0
       ? setTimeout(() => {
         timedOut = true
-        if (child && !child.killed) child.kill()
+        killHard()
       }, timeoutMs)
       : null
     const finish = (code, errorMessage) => {
@@ -193,19 +223,36 @@ function run(command, args, options = {}) {
   })
 }
 
+// PATH lookups were ~30 ms each and the status report asks twice; cache them briefly.
+const whichCache = new Map()
+const WHICH_TTL_MS = 60_000
+
 function which(name) {
+  const cached = whichCache.get(name)
+  if (cached && Date.now() - cached.at < WHICH_TTL_MS) return cached.value
   const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean)
   const exts = IS_WINDOWS ? (process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';').filter(Boolean) : ['']
+  let found = null
   for (const dir of dirs) {
     for (const ext of exts) {
       const candidate = path.join(dir, name + ext)
-      if (existsFile(candidate)) return candidate
+      if (existsFile(candidate)) { found = candidate; break }
     }
+    if (found) break
   }
-  return null
+  whichCache.set(name, { at: Date.now(), value: found })
+  return found
 }
 
-async function statusReport(config = {}) {
+// The CLI probes are subprocesses (`--version` and the ~90 KB `capabilities` scan). The status
+// page and the craft_status tool used to run both on every request; cache them for a while so a
+// polling page costs nothing. `refresh`/`?full=1` bypasses the cache.
+const VERSION_TTL_MS = 5 * 60_000
+const CAPABILITIES_TTL_MS = 10 * 60_000
+const probeCache = { cli: null, version: null, versionAt: 0, capabilities: null, capabilitiesAt: 0 }
+
+async function statusReport(config = {}, options = {}) {
+  const refresh = options.full === true
   const resolved = resolveCli(config)
   const report = {
     installed: Boolean(resolved.cli),
@@ -231,33 +278,56 @@ async function statusReport(config = {}) {
     notes: [],
   }
   if (!resolved.cli) {
-    report.notes.push('craft-anything-cli was not found. Run the craft_install tool (or scripts/install-cli.ps1), then reload the plugin.')
+    report.notes.push('craft-anything-cli was not found. Run the craft_install tool, then reload the plugin.')
     return report
   }
   report.portable = existsFile(path.join(path.dirname(resolved.cli), 'portable.txt'))
-  const version = await run(resolved.cli, ['--version'], { timeoutMs: 20_000 })
-  report.version = (version.stdout || version.stderr || '').trim().split(/\r?\n/)[0] || null
-  if (version.code !== 0) report.notes.push(`\`--version\` exited ${version.code}: ${(version.stderr || '').trim().slice(0, 400)}`)
-  const capabilities = await run(resolved.cli, ['capabilities'], { timeoutMs: 60_000 })
-  if (capabilities.code === 0) {
-    try {
-      const parsed = JSON.parse(capabilities.stdout)
-      // Build only defined keys: the tool result must stay lossless JSON, and an
-      // `undefined` member fails the call after the work already ran.
-      const summary = {}
-      if (typeof parsed.analysis_mode === 'string') summary.analysisMode = parsed.analysis_mode
-      if (Array.isArray(parsed.toolsets)) summary.toolsets = parsed.toolsets.length
-      if (Number.isFinite(parsed.tools)) summary.tools = parsed.tools
-      if (Array.isArray(parsed.engines)) {
-        summary.enginesFound = parsed.engines.filter((engine) => engine && engine.found).map((engine) => String(engine.id || engine.name || '?')).slice(0, 24)
-      }
-      report.capabilities = summary
-    } catch {
-      report.notes.push('`capabilities` did not return JSON; raw output trimmed to 600 chars.')
-      report.capabilitiesRaw = (capabilities.stdout || '').slice(0, 600)
-    }
+  if (probeCache.cli !== resolved.cli) {
+    probeCache.cli = resolved.cli
+    probeCache.version = null
+    probeCache.versionAt = 0
+    probeCache.capabilities = null
+    probeCache.capabilitiesAt = 0
+  }
+  const now = Date.now()
+  if (!refresh && probeCache.version && now - probeCache.versionAt < VERSION_TTL_MS) {
+    report.version = probeCache.version
   } else {
-    report.notes.push(`\`capabilities\` exited ${capabilities.code}: ${(capabilities.stderr || '').trim().slice(0, 400)}`)
+    const version = await run(resolved.cli, ['--version'], { timeoutMs: 20_000 })
+    report.version = (version.stdout || version.stderr || '').trim().split(/\r?\n/)[0] || null
+    probeCache.version = report.version
+    probeCache.versionAt = Date.now()
+    if (version.code !== 0) report.notes.push(`\`--version\` exited ${version.code}: ${(version.stderr || '').trim().slice(0, 400)}`)
+  }
+  if (!refresh && probeCache.capabilities && now - probeCache.capabilitiesAt < CAPABILITIES_TTL_MS) {
+    report.capabilities = probeCache.capabilities
+  } else {
+    const capabilities = await run(resolved.cli, ['capabilities'], { timeoutMs: 60_000 })
+    if (capabilities.code === 0) {
+      try {
+        const parsed = JSON.parse(capabilities.stdout)
+        // Build only defined keys: the tool result must stay lossless JSON, and an
+        // `undefined` member fails the call after the work already ran.
+        const summary = {}
+        if (typeof parsed.analysis_mode === 'string') summary.analysisMode = parsed.analysis_mode
+        if (Array.isArray(parsed.toolsets)) summary.toolsets = parsed.toolsets.length
+        if (Number.isFinite(parsed.tools)) summary.tools = parsed.tools
+        if (Array.isArray(parsed.engines)) {
+          summary.enginesFound = parsed.engines
+            .filter((engine) => engine && engine.found)
+            .map((engine) => String(engine.id || engine.name || '?'))
+            .slice(0, 24)
+        }
+        report.capabilities = summary
+        probeCache.capabilities = summary
+        probeCache.capabilitiesAt = Date.now()
+      } catch {
+        report.notes.push('`capabilities` did not return JSON; raw output trimmed to 600 chars.')
+        report.capabilitiesRaw = (capabilities.stdout || '').slice(0, 600)
+      }
+    } else {
+      report.notes.push(`\`capabilities\` exited ${capabilities.code}: ${(capabilities.stderr || '').trim().slice(0, 400)}`)
+    }
   }
   if (!report.prerequisites.codingAgent) {
     report.notes.push('No `claude` coding agent on PATH: study and inspect tools work, but `rebuild` needs a coding agent signed in (see `craft-anything-cli doctor`).')
@@ -265,6 +335,11 @@ async function statusReport(config = {}) {
   // GHIDRA_INSTALL_DIR being set does not prove the CLI found Ghidra; report both facts.
   if (report.capabilities && Array.isArray(report.capabilities.enginesFound)) {
     report.prerequisites.ghidraDetected = report.capabilities.enginesFound.includes('ghidra')
+  }
+  // The host tools resolve the newest installed CLI, while the MCP bridge keeps the one it
+  // started with. Say so instead of silently reporting one version for two processes.
+  if (report.mcpState && report.mcpState.version && report.version && !report.version.includes(report.mcpState.version)) {
+    report.notes.push(`The MCP bridge is still running craft-anything ${report.mcpState.version} while the host tools already use ${report.version}; switch mode or reinstall once and the bridge restarts into ${report.version}.`)
   }
   return report
 }
@@ -290,6 +365,10 @@ function renderStatus(value) {
   lines.push(`  mode: ${value.mode === 'deep' ? 'deep (reads code, files and page source)' : 'clean room (nothing inside a target is read)'}${
     value.mcpState && value.mcpState.mode !== value.mode ? ` — note: the running server still reports ${value.mcpState.mode}; it switches on the next reconnect` : ''
   }`)
+  if (value.mcpState) {
+    const running = value.mcpState.version ? `craft-anything ${value.mcpState.version}` : 'the bridge process'
+    lines.push(`  bridge: ${running}${value.mcpState.pid ? ` (pid ${value.mcpState.pid})` : ''}${value.mcpState.startedAt ? `, started ${value.mcpState.startedAt}` : ''}`)
+  }
   lines.push(`  coding agent: ${value.prerequisites.codingAgent || 'not found on PATH'}`)
   lines.push(`  Ghidra: ${value.prerequisites.ghidraDetected
     ? 'detected by the CLI'
@@ -305,14 +384,19 @@ function statusTool(config) {
   return {
     name: 'craft_status',
     description:
-      'Report the local Craft Anything install: CLI path and version, portable or not, capability counts, coding-agent and Ghidra availability, and how the MCP bridge is wired (tools appear as mcp__craft__*). Read-only; use it before rebuild work or to diagnose a missing CLI.',
-    parameters: { type: 'object', properties: {} },
+      'Report the local Craft Anything install: CLI path and version, portable or not, capability counts, coding-agent and Ghidra availability, and how the MCP bridge is wired (tools appear as mcp__craft__*). Read-only; results are cached for a few minutes, pass refresh:true to re-run the CLI probes.',
+    parameters: {
+      type: 'object',
+      properties: {
+        refresh: { type: 'boolean', description: 'Re-run `craft-anything-cli --version` and `capabilities` instead of using the cache.' },
+      },
+    },
     output: {
       schema: { type: 'object' },
       render: (_args, value) => renderStatus(value),
     },
-    async execute() {
-      return statusReport(config)
+    async execute(args) {
+      return statusReport(config, { full: args?.refresh === true })
     },
   }
 }
@@ -382,7 +466,7 @@ function installTool(config) {
   return {
     name: 'craft_install',
     description:
-      'Download or update the official Craft Anything CLI for this machine from github.com/storytold/craft-anything releases into the plugin data directory, verifying the release SHA256 before unpacking. Needs the system proxy on this machine. After installing, reload the plugin (or restart the Harness) so the MCP bridge starts the server. Windows only; on other platforms the CLI has to be installed by hand.',
+      'Download or update the official Craft Anything CLI for this machine from github.com/storytold/craft-anything releases into the plugin data directory, verifying the release SHA256 before unpacking. Windows uses the official portable zip; macOS uses the official universal CLI zip; Linux uses the release tarball (best effort). Uses the system proxy. A successful install asks the running MCP bridge to restart so it picks up the new CLI (no Harness restart needed).',
     parameters: {
       type: 'object',
       properties: {
@@ -395,21 +479,49 @@ function installTool(config) {
       render: (_args, value) => [{ type: 'text', text: value.output || (value.ok ? 'done' : 'failed') }],
     },
     async execute(args, exec) {
-      if (!IS_WINDOWS) {
-        throw new Error(`Automatic install is Windows-only. On ${process.platform} install craft-anything-cli from the project README and set CRAFT_ANYTHING_CLI or config.cliPath.`)
-      }
-      if (!existsFile(INSTALLER)) throw new Error(`installer script is missing from the plugin package: ${INSTALLER}`)
       const version = typeof args?.version === 'string' && args.version.trim() ? args.version.trim() : 'latest'
-      const argv = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', INSTALLER, '-Version', version]
-      if (args?.force) argv.push('-Force')
-      if (config.installDir) argv.push('-Root', config.installDir)
-      const result = await run('powershell.exe', argv, { timeoutMs: 900_000, signal: exec?.signal })
-      const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trimEnd()
+      const output = []
+      let result
+      if (IS_WINDOWS) {
+        if (!existsFile(INSTALLER)) throw new Error(`installer script is missing from the plugin package: ${INSTALLER}`)
+        const argv = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', INSTALLER, '-Version', version]
+        if (args?.force) argv.push('-Force')
+        if (config.installDir) argv.push('-Root', config.installDir)
+        result = await run('powershell.exe', argv, { timeoutMs: 900_000, signal: exec?.signal })
+        output.push(result.stdout, result.stderr)
+      } else {
+        // macOS / Linux: the same download+verify+unpack flow implemented without PowerShell.
+        if (!existsFile(INSTALLER_NODE)) throw new Error(`installer script is missing from the plugin package: ${INSTALLER_NODE}`)
+        const argv = [INSTALLER_NODE, '--version', version]
+        if (args?.force) argv.push('--force')
+        if (config.installDir) argv.push('--root', config.installDir)
+        const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
+        result = await run(process.execPath, argv, { timeoutMs: 900_000, signal: exec?.signal, env })
+        output.push(result.stdout, result.stderr)
+      }
+      const text = output.filter(Boolean).join('\n').trimEnd()
       const payload = {
         ok: result.code === 0,
         exitCode: result.code,
-        output: output.length > 8_000 ? `${output.slice(0, 8_000)}\n... [trimmed]` : (output || '(installer printed nothing)'),
+        output: text.length > 8_000 ? `${text.slice(0, 8_000)}\n... [trimmed]` : (text || '(installer printed nothing)'),
         ms: result.ms,
+      }
+      if (payload.ok) {
+        // New binaries usually mean a newer version than the one the bridge started with; the
+        // launcher watches this marker file and restarts the server, so the MCP tools move to the
+        // new CLI without a Harness restart. Reset the status caches so the page shows it.
+        try {
+          const root = installRoot(config)
+          fs.mkdirSync(root, { recursive: true })
+          fs.writeFileSync(path.join(root, 'mcp.restart'), `${new Date().toISOString()}\n`)
+        } catch { /* the restart marker is best effort */ }
+        probeCache.cli = null
+        probeCache.version = null
+        probeCache.versionAt = 0
+        probeCache.capabilities = null
+        probeCache.capabilitiesAt = 0
+        statusCache = { at: 0, report: null }
+        payload.output += '\n\nThe running MCP bridge restarts now to use the new CLI (its tool list re-syncs in a second or two).'
       }
       if (!payload.ok) {
         payload.output += '\n\nIf the download failed, check the system proxy and try `craft_cli` with ["--version"] afterwards.'
@@ -533,7 +645,8 @@ function statusRouteHandler(getSettings) {
       return
     }
     try {
-      const status = await cachedStatus(getSettings())
+      const full = typeof req.url === 'string' && /[?&]full=1(?:&|$)/.test(req.url)
+      const status = full ? await refreshStatus(getSettings()) : await cachedStatus(getSettings())
       send(200, { ok: true, status })
     } catch (error) {
       send(500, { ok: false, error: String(error?.message || error) })
@@ -542,13 +655,19 @@ function statusRouteHandler(getSettings) {
 }
 
 let statusCache = { at: 0, report: null }
-const STATUS_TTL_MS = 15_000
+const STATUS_TTL_MS = 60_000
 
 async function cachedStatus(settings) {
   const now = Date.now()
   if (statusCache.report && now - statusCache.at < STATUS_TTL_MS) return statusCache.report
   const report = await statusReport(settings)
-  statusCache = { at: now, report }
+  statusCache = { at: Date.now(), report }
+  return report
+}
+
+async function refreshStatus(settings) {
+  const report = await statusReport(settings, { full: true })
+  statusCache = { at: Date.now(), report }
   return report
 }
 

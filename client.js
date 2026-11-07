@@ -14,7 +14,10 @@ window.__ModuleLoader__.load({
     const PANEL_ID = 'craft-anything'
     const STATUS_ROUTE = '/craft-anything/api/status'
     const MODE_ROUTE = '/craft-anything/api/mode'
-    const IDLE_REFRESH_MS = 30_000
+    // The status route assembles a whole install report; the mode route only reads one file.
+    // Poll the cheap one, keep the expensive one on mount + manual refresh + a slow timer.
+    const MODE_REFRESH_MS = 60_000
+    const STATUS_REFRESH_MS = 300_000
 
     function CraftIcon(props) {
       const size = props && Number.isFinite(props.size) ? props.size : 20
@@ -92,11 +95,11 @@ window.__ModuleLoader__.load({
 
     function useStatus() {
       const [state, setState] = React.useState({ phase: 'loading' })
-      const fetchStatus = React.useCallback(() => {
+      const fetchStatus = React.useCallback((force) => {
         setState((previous) => ({ phase: previous.data ? 'refreshing' : 'loading', data: previous.data }))
         const controller = typeof AbortController === 'function' ? new AbortController() : null
         const timer = controller ? setTimeout(() => controller.abort(), 20_000) : null
-        fetch(STATUS_ROUTE, { headers: { accept: 'application/json' }, signal: controller ? controller.signal : undefined })
+        fetch(force === true ? `${STATUS_ROUTE}?full=1` : STATUS_ROUTE, { headers: { accept: 'application/json' }, signal: controller ? controller.signal : undefined })
           .then((response) => {
             if (!response.ok) throw new Error(`status route answered HTTP ${response.status}`)
             return response.json()
@@ -109,7 +112,7 @@ window.__ModuleLoader__.load({
         fetchStatus()
         const interval = setInterval(() => {
           if (typeof document === 'undefined' || document.visibilityState === 'visible') fetchStatus()
-        }, IDLE_REFRESH_MS)
+        }, STATUS_REFRESH_MS)
         return () => clearInterval(interval)
       }, [fetchStatus])
       return { state, fetchStatus }
@@ -159,7 +162,7 @@ window.__ModuleLoader__.load({
       return h('section', { className: 'dsh-ca-card' },
         h('div', { className: 'dsh-ca-card-head' },
           h('h2', null, 'Local install'),
-          h('button', { className: 'dsh-ca-btn', type: 'button', onClick: fetchStatus, disabled: busy }, busy ? 'Checking…' : 'Refresh')),
+          h('button', { className: 'dsh-ca-btn', type: 'button', onClick: () => fetchStatus(true), disabled: busy }, busy ? 'Checking…' : 'Refresh')),
         state.phase === 'error'
           ? h('div', { className: 'dsh-ca-rows' },
             h('div', { className: 'dsh-ca-bad' }, `Could not read the status route: ${state.error}`),
@@ -184,7 +187,9 @@ window.__ModuleLoader__.load({
       }, [])
       React.useEffect(() => {
         refresh()
-        const interval = setInterval(refresh, IDLE_REFRESH_MS)
+        const interval = setInterval(() => {
+          if (typeof document === 'undefined' || document.visibilityState === 'visible') refresh()
+        }, MODE_REFRESH_MS)
         return () => clearInterval(interval)
       }, [refresh])
       const choose = React.useCallback((next) => {

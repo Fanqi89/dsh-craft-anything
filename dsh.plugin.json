@@ -1,9 +1,9 @@
 {
   "id": "dsh-craft-anything",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Craft Anything for DeepSeek Harness: bridges the local craft-anything CLI into DSH as mcp__craft__* tools (study and rebuild any website, app or game with evidence), with a clean-room/deep mode switch in the composer, a status page, a CLI runner and a verified CLI installer.",
   "engines": {
-    "dsh": ">=0.2.0-rc.2"
+    "dsh": ">=0.2.1-rc.2"
   },
   "contributes": {
     "tools": [
