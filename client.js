@@ -19,6 +19,38 @@ window.__ModuleLoader__.load({
     const STATUS_ROUTE = '/craft-anything/api/status'
     const MODE_ROUTE = '/craft-anything/api/mode'
     const ENV_ROUTE = '/craft-anything/api/env'
+    const TOKEN_ROUTE = '/craft-anything/api/token'
+
+    // Every management route requires Authorization: Bearer <token>. The token is minted by the
+    // Host half per Harness process; this page bootstraps it from a route that itself sits behind
+    // the DSH connection admission, so no user input is involved. A rotated token (plugin reload)
+    // shows up as one 401, which re-bootstraps and retries once.
+    let tokenPromise = null
+    function fetchToken() {
+      if (!tokenPromise) {
+        tokenPromise = fetch(TOKEN_ROUTE, { headers: { accept: 'application/json' }, credentials: 'same-origin' })
+          .then((response) => (response.ok ? response.json() : Promise.reject(new Error(`token route answered HTTP ${response.status}`))))
+          .then((body) => {
+            if (!body || typeof body.token !== 'string' || body.token.length < 16) throw new Error('token route returned no token')
+            return body.token
+          })
+          .catch((error) => { tokenPromise = null; throw error })
+      }
+      return tokenPromise
+    }
+    function apiFetch(path, options = {}) {
+      const request = (token) => fetch(path, {
+        ...options,
+        credentials: 'same-origin',
+        headers: { accept: 'application/json', ...(options.headers || {}), authorization: `Bearer ${token}` },
+      })
+      return fetchToken().then(request).then((response) => {
+        if (response.status !== 401) return response
+        tokenPromise = null
+        return fetchToken().then(request)
+      })
+    }
+
     // The status route assembles a whole install report; the mode route only reads one file.
     // Poll the cheap one, keep the expensive one on mount + manual refresh + a slow timer.
     const MODE_REFRESH_MS = 60_000
@@ -286,7 +318,7 @@ window.__ModuleLoader__.load({
         setState((previous) => ({ phase: previous.data ? 'refreshing' : 'loading', data: previous.data }))
         const controller = typeof AbortController === 'function' ? new AbortController() : null
         const timer = controller ? setTimeout(() => controller.abort(), 20_000) : null
-        fetch(force === true ? `${STATUS_ROUTE}?full=1` : STATUS_ROUTE, { headers: { accept: 'application/json' }, signal: controller ? controller.signal : undefined })
+        apiFetch(force === true ? `${STATUS_ROUTE}?full=1` : STATUS_ROUTE, { signal: controller ? controller.signal : undefined })
           .then((response) => {
             if (!response.ok) throw new Error(`status route answered HTTP ${response.status}`)
             return response.json()
@@ -372,7 +404,7 @@ window.__ModuleLoader__.load({
       const [mode, setMode] = React.useState(null)
       const [pending, setPending] = React.useState(false)
       const refresh = React.useCallback(() => {
-        fetch(MODE_ROUTE, { headers: { accept: 'application/json' } })
+        apiFetch(MODE_ROUTE)
           .then((response) => (response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))))
           .then((body) => setMode(body && body.mode === 'deep' ? 'deep' : 'clean'))
           .catch(() => { /* the Host half may be inactive; keep the last known value */ })
@@ -387,9 +419,9 @@ window.__ModuleLoader__.load({
       const choose = React.useCallback((next) => {
         setPending(true)
         setMode(next)
-        fetch(MODE_ROUTE, {
+        apiFetch(MODE_ROUTE, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', accept: 'application/json' },
+          headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ mode: next }),
         })
           .then((response) => (response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))))
@@ -536,7 +568,7 @@ window.__ModuleLoader__.load({
     function useEnv() {
       const [state, setState] = React.useState({ phase: 'loading', data: null })
       const load = React.useCallback((force) => {
-        fetch(force === true ? ENV_ROUTE + '?full=1' : ENV_ROUTE, { headers: { accept: 'application/json' } })
+        apiFetch(force === true ? ENV_ROUTE + '?full=1' : ENV_ROUTE)
           .then((response) => {
             if (!response.ok) throw new Error(`env route answered HTTP ${response.status}`)
             return response.json()
@@ -558,9 +590,9 @@ window.__ModuleLoader__.load({
         const interval = setInterval(load, 2500)
         return () => clearInterval(interval)
       }, [running, load])
-      const action = React.useCallback((body) => fetch(ENV_ROUTE, {
+      const action = React.useCallback((body) => apiFetch(ENV_ROUTE, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       }).then((response) => response.json()).finally(load), [load])
       return { state, load, action }

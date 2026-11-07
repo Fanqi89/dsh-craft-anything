@@ -1,5 +1,32 @@
 # 更新日志
 
+## [v0.3.1] - 2026-11-08
+
+安全修复：Web 管理接口接入宿主认证 + Bearer Token + Host/Origin 双校验。功能行为不变。
+
+### 修复（安全审查意见）
+
+- **管理接口无鉴权**：`/craft-anything/api/status`、`/mode`、`/env` 之前任何人都能直接 GET/POST（包括触发 CLI 依赖安装的 `POST /api/env {"action":"install"}`）。现在三条路由统一走 `guarded()`：
+  - **Host 头**只接受 `127.0.0.1` / `localhost` / `::1`，否则 403（防 DNS rebinding）；
+  - **Origin** 必须与本地 authority 一致，跨站（含跨域 POST）→ 403（防 CSRF）；
+  - **宿主 connection 准入**：浏览器请求必须通过 `ctx.connection.requestRejection()`（复用 DSH 的 Host/Origin/浏览器会话认证），未认证 → 401；
+  - **Bearer Token**：启动时 `crypto.randomBytes(32)` 生成，`Authorization: Bearer <token>` 缺失/错误 → 401，比较用 `timingSafeEqual`。
+- **Token 下发（无用户输入）**：新增 `GET /craft-anything/api/token`（本身在 connection 准入之后），状态页自动引导并缓存；Token 同时写入 `<root>/http.token`（0600）供本地 CLI 使用；支持 `CRAFT_ANYTHING_HTTP_TOKEN`（≥32 字符）覆盖。
+- **新增配置**：`trustedHosts`（默认空）与 `allowNonLoopback`（默认 false），只有显式放开时才接受非回环 Host；默认严格回环。
+- 前端（[client.js](client.js)）：新增 `fetchToken()` + `apiFetch()`，所有 status/mode/env 请求自动带 Bearer 并带 `credentials: same-origin`；401 时重新引导并重试一次（覆盖插件重载导致的 Token 轮换）。
+
+### 验证（Windows，DSH 0.2.1-rc.5，真机）
+
+- 无鉴权 `GET /api/status` → **401**；无鉴权 `POST /api/mode` → **401**（不再触发模式切换或安装）；
+- 正确 Bearer → **200**；错误 Token → **401**；`Origin: https://evil.example` → **403**；`Host: evil.example` → **403**；
+- 状态页（中文/英文）在浏览器里照常加载环境卡、本地安装、MCP 桥；页面内切换模式到深度再切回净室成功（浏览器 POST 带 Bearer + DSH cookie 通过）；
+- Token 文件 64 hex 字符、位于 `<root>/http.token`。
+
+### 兼容性
+
+- 仍为 `engines.dsh >=0.2.1-rc.2`：`@deepseek-ai/dsh-client-connection` 的 `requestRejection/admit` 在 0.2.1-rc.2 与 rc.5 都存在（且 rc.2 与 rc.5 该包内容一致）。
+- 非 Web profile（无 `webServer`）时路由不注册，工具不受影响；`connection` 服务缺失时浏览器请求一律 401（fail-closed），非浏览器请求仍需 Bearer。
+
 ## [v0.3.0] - 2026-11-07
 
 页面双语 + 环境与依赖一键补齐。功能行为与 v0.2.0 相同，新增的是界面能力和安装自动化。

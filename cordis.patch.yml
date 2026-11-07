@@ -48,6 +48,12 @@
         # installDir: 'D:\craft-anything'                # override the install root
         # projectDir: 'D:\craft-anything\work'           # default cwd for craft_cli
         # projectsRoot: 'D:\craft-anything\projects'     # shown on the status page
+        # The HTTP management routes (status/mode/env/token) are authenticated: a random per-process
+        # Bearer token (also written to <root>/http.token, 0600), the Host/Origin fence, and DSH's own
+        # connection admission. Widen the fence only if the Web UI is deliberately served beyond
+        # loopback: allowNonLoopback: true + trustedHosts: ['myhost:51404'].
+        # trustedHosts: ['myhost:51404']
+        # allowNonLoopback: false
     - id: craft-anything-mcp
       name: '@deepseek-ai/dsh-mcp-client'
       config:

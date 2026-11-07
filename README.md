@@ -180,6 +180,30 @@ Host 半边只做三件事：读本地状态、跑本地 CLI、走 DSH 自带的
 - **Claude Code**：走 `npm install -g @anthropic-ai/claude-code`（Windows 用 npm 的 JS 入口，避免 `npm.CMD` 的 EINVAL）；装完还要执行一次 `claude` 登录或用 API Key，`rebuild` 才能用。
 - 手动项（Java/GDB/Chromium）给出当前系统对应的命令（winget / brew / apt），点「复制命令」粘贴执行即可。
 
+## 安全：管理接口鉴权
+
+三条管理路由（`GET/POST /craft-anything/api/mode`、`GET /craft-anything/api/status`、`GET/POST /craft-anything/api/env`）
+统一下了四层准入；未通过直接 401/403 且**不执行任何副作用**（不会跑 CLI、不会装依赖）：
+
+1. **Host 头白名单**：只接受 `127.0.0.1` / `localhost`（含 `::1`）；Host 不是本机 → 403（防 DNS rebinding）。
+2. **Origin 校验**：浏览器发来的请求，`Origin` 必须与请求的本地 authority 一致；跨站请求 → 403（防 CSRF，跨域 POST 一律拒绝）。
+3. **宿主 connection 准入**：浏览器请求必须带 DSH 自己的会话凭据——`ctx.connection.requestRejection()` 复用宿主 DSH 的 Host/Origin/浏览器认证，未登录的浏览器请求 → 401。
+4. **Bearer Token**：插件启动时用 `crypto.randomBytes(32)` 生成一次性随机 Token，所有管理请求必须带 `Authorization: Bearer <token>`，缺失或错误 → 401（比较用 `timingSafeEqual`）。
+
+Token 的取得方式（**不需要用户输入密码或扫码**）：
+
+- **页面自动引导**：状态页启动时 `GET /craft-anything/api/token`（该路由本身在 connection 准入之后）拿到 Token，之后所有 fetch 自动附带 Bearer；Token 轮换（插件重载）时遇到一次 401 会自动重新引导并重试。
+- **本地脚本/CLI**：Token 同时写到 `<root>/http.token`（Unix 上 0600），直接读文件即可：
+
+```powershell
+$token = (Get-Content "$env:USERPROFILE\.dsh\plugins-data\craft-anything\http.token" -Raw).Trim()
+curl.exe -H "Authorization: Bearer $token" http://127.0.0.1:51404/craft-anything/api/status
+```
+
+可用环境变量 `CRAFT_ANYTHING_HTTP_TOKEN`（≥32 字符）覆盖随机 Token，便于自动化测试；
+Web UI 若确实要对外网/非回环地址提供服务，需显式放开（默认关闭）：
+`config.allowNonLoopback: true` + `config.trustedHosts: ['myhost:51404']`，否则非回环 Host 一律 403。
+
 ## 排障 / 已知坑
 
 **「macOS 上装完插件 DSH 卡死」已修复（v0.2.0）**

@@ -9,6 +9,7 @@
 // Everything here only reads local state or runs the local CLI. No network call
 // is made except by craft_install, which downloads the official release.
 
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -560,6 +561,167 @@ function modeTool(config) {
 }
 
 export const inject = ['tools']
+
+// --- HTTP management-interface authentication ---------------------------------------------------
+// Named routes on the DSH Web server have no server-wide auth (the carrier README says route owners
+// "enforce their own request policy"), so every management route below is guarded here:
+//   1. Host fence: only 127.0.0.1 / localhost (or an explicitly configured trustedHosts entry).
+//   2. Origin fence: a browser request must come from the same local origin; a cross-site request
+//      is refused before any work happens (CSRF).
+//   3. Host connection admission: browser-originated requests must carry the DSH session credential
+//      (ctx.connection.requestRejection applies DSH's own Host/Origin/browser checks and answers
+//      401/403 for unauthenticated requests).
+//   4. Bearer token: this plugin's own random per-process token, required on every management
+//      request. The Web page bootstraps it from GET /craft-anything/api/token (itself behind the
+//      DSH connection admission) and it is also written to <root>/http.token (0600) for local CLI
+//      clients. No password or manual input is involved.
+
+const TOKEN_ROUTE = '/craft-anything/api/token'
+const HTTP_TOKEN_FILE = 'http.token'
+const HTTP_TOKEN_MIN_LENGTH = 32
+
+function createHttpAuth(ctx, settings = {}) {
+  const override = typeof process.env.CRAFT_ANYTHING_HTTP_TOKEN === 'string' ? process.env.CRAFT_ANYTHING_HTTP_TOKEN.trim() : ''
+  const token = override.length >= HTTP_TOKEN_MIN_LENGTH ? override : randomBytes(32).toString('hex')
+  const tokenFile = path.join(installRoot(settings), HTTP_TOKEN_FILE)
+  try {
+    fs.mkdirSync(installRoot(settings), { recursive: true })
+    fs.writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 })
+    try { fs.chmodSync(tokenFile, 0o600) } catch { /* Windows ignores POSIX modes */ }
+  } catch { /* the in-memory token still guards the routes */ }
+  return {
+    token,
+    tokenFile,
+    trustedHosts: Array.isArray(settings.trustedHosts) ? settings.trustedHosts.filter((entry) => typeof entry === 'string' && entry.trim()).map((entry) => entry.trim()) : [],
+    allowNonLoopback: settings.allowNonLoopback === true,
+    connection: () => {
+      try {
+        const connection = ctx.get('connection')
+        return connection && typeof connection.requestRejection === 'function' ? connection : undefined
+      } catch {
+        return undefined
+      }
+    },
+  }
+}
+
+function headerOf(headers, name) {
+  if (!headers) return undefined
+  const value = headers[name] ?? headers[name.toLowerCase()]
+  if (Array.isArray(value)) return value.join(', ')
+  return typeof value === 'string' ? value : undefined
+}
+
+function authorityOf(value) {
+  if (typeof value !== 'string' || value.length === 0) return undefined
+  try { return new URL(`http://${value}`) } catch { return undefined }
+}
+
+function isLoopbackHostname(hostname) {
+  const normal = String(hostname || '').toLowerCase()
+  if (normal === 'localhost' || normal === '::1' || normal === '[::1]') return true
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(normal)
+  if (!match) return false
+  const octets = match.slice(1).map(Number)
+  return octets.every((part) => part >= 0 && part <= 255) && octets[0] === 127
+}
+
+/** Host header fence: loopback only unless the profile explicitly widens it. */
+function hostAllowed(req, auth) {
+  const authority = authorityOf(headerOf(req.headers, 'host'))
+  if (!authority) return false
+  if (isLoopbackHostname(authority.hostname)) return true
+  if (!auth.allowNonLoopback) return false
+  const normalized = authority.host.toLowerCase()
+  return auth.trustedHosts.some((entry) => {
+    const trusted = authorityOf(entry)
+    return trusted !== undefined && trusted.host.toLowerCase() === normalized
+  })
+}
+
+/** Origin fence: a browser Origin must equal the request authority and stay local. */
+function originAllowed(req, auth) {
+  const origin = headerOf(req.headers, 'origin')
+  if (origin === undefined) return true // non-browser client: gated by the Bearer token
+  let parsed
+  try { parsed = new URL(origin) } catch { return false }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
+  if (!isLoopbackHostname(parsed.hostname) && !(auth.allowNonLoopback && auth.trustedHosts.length > 0)) return false
+  const authority = authorityOf(headerOf(req.headers, 'host'))
+  if (!authority) return false
+  return parsed.host.toLowerCase() === authority.host.toLowerCase()
+}
+
+function isBrowserRequest(req) {
+  const site = headerOf(req.headers, 'sec-fetch-site')
+  if (site !== undefined) return site !== 'none'
+  return headerOf(req.headers, 'origin') !== undefined || headerOf(req.headers, 'referer') !== undefined
+}
+
+function bearerOf(req) {
+  const value = headerOf(req.headers, 'authorization')
+  if (typeof value !== 'string') return undefined
+  const match = /^Bearer[ \t]+([A-Za-z0-9._~+/=-]{8,4096})$/i.exec(value.trim())
+  return match ? match[1] : undefined
+}
+
+function constantEquals(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false
+  const left = Buffer.from(a, 'utf8')
+  const right = Buffer.from(b, 'utf8')
+  return left.length === right.length && timingSafeEqual(left, right)
+}
+
+function sendJson(res, status, payload) {
+  res.statusCode = status
+  res.setHeader('content-type', 'application/json; charset=utf-8')
+  res.setHeader('cache-control', 'no-store')
+  res.setHeader('x-content-type-options', 'nosniff')
+  res.setHeader('vary', 'Origin')
+  res.end(JSON.stringify(payload))
+}
+
+/** undefined: authorized; 401/403: answer that status and stop before any side effect. */
+async function rejectRequest(req, auth, options = {}) {
+  const requireToken = options.requireToken !== false
+  const requireConnection = options.requireConnection === 'always'
+  if (!hostAllowed(req, auth)) return 403
+  if (!originAllowed(req, auth)) return 403
+  if (requireConnection || isBrowserRequest(req)) {
+    const connection = auth.connection()
+    if (!connection) return 401
+    const rejection = connection.requestRejection({ headers: req.headers })
+    if (rejection === 401 || rejection === 403) return rejection
+  }
+  if (requireToken && !constantEquals(bearerOf(req), auth.token)) return 401
+  return undefined
+}
+
+function guarded(handler, auth, options = {}) {
+  return async (req, res) => {
+    const rejection = await rejectRequest(req, auth, options)
+    if (rejection !== undefined) {
+      sendJson(res, rejection, {
+        ok: false,
+        error: rejection === 401 ? 'unauthorized' : 'forbidden',
+        hint: rejection === 401 && options.requireToken !== false ? 'management routes require Authorization: Bearer <token> from /craft-anything/api/token' : undefined,
+      })
+      return
+    }
+    return handler(req, res)
+  }
+}
+
+function tokenRouteHandler(auth) {
+  return guarded(async (req, res) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      sendJson(res, 405, { ok: false, error: 'GET only' })
+      return
+    }
+    sendJson(res, 200, { ok: true, token: auth.token })
+  }, auth, { requireToken: false, requireConnection: 'always' })
+}
+
 
 const STATUS_ROUTE = '/craft-anything/api/status'
 const MODE_ROUTE = '/craft-anything/api/mode'
@@ -1115,6 +1277,8 @@ export function apply(ctx, config) {
     installDir: typeof raw.installDir === 'string' && raw.installDir.trim() ? raw.installDir.trim() : undefined,
     projectDir: typeof raw.projectDir === 'string' && raw.projectDir.trim() ? raw.projectDir.trim() : undefined,
     projectsRoot: typeof raw.projectsRoot === 'string' && raw.projectsRoot.trim() ? raw.projectsRoot.trim() : undefined,
+    trustedHosts: Array.isArray(raw.trustedHosts) ? raw.trustedHosts : [],
+    allowNonLoopback: raw.allowNonLoopback === true,
   }
   const definitions = [statusTool(settings), cliTool(settings), installTool(settings), modeTool(settings)]
   ctx.effect(() => {
@@ -1133,19 +1297,27 @@ export function apply(ctx, config) {
     }
   }, 'dsh-craft-anything: craft tools')
 
+  // Management-interface auth: one random token per Harness process, written owner-only for local
+  // CLI clients and bootstrapped by the Web page; every route below sits behind guarded().
+  const httpAuth = createHttpAuth(ctx, settings)
+
   // The Web page reads live install state from this route. webServer is optional:
   // without it (TUI-only profile) the tools still work and the page is not mounted.
   ctx.inject(['webServer'], (webCtx) => {
     webCtx.effect(
-      () => webCtx.webServer.register({ kind: 'exact', path: STATUS_ROUTE, handler: statusRouteHandler(() => settings) }),
+      () => webCtx.webServer.register({ kind: 'exact', path: TOKEN_ROUTE, handler: tokenRouteHandler(httpAuth) }),
+      'dsh-craft-anything: token route',
+    )
+    webCtx.effect(
+      () => webCtx.webServer.register({ kind: 'exact', path: STATUS_ROUTE, handler: guarded(statusRouteHandler(() => settings), httpAuth) }),
       'dsh-craft-anything: status route',
     )
     webCtx.effect(
-      () => webCtx.webServer.register({ kind: 'exact', path: MODE_ROUTE, handler: modeRouteHandler(() => settings) }),
+      () => webCtx.webServer.register({ kind: 'exact', path: MODE_ROUTE, handler: guarded(modeRouteHandler(() => settings), httpAuth) }),
       'dsh-craft-anything: mode route',
     )
     webCtx.effect(
-      () => webCtx.webServer.register({ kind: 'exact', path: ENV_ROUTE, handler: envRouteHandler(() => settings) }),
+      () => webCtx.webServer.register({ kind: 'exact', path: ENV_ROUTE, handler: guarded(envRouteHandler(() => settings), httpAuth) }),
       'dsh-craft-anything: environment route',
     )
   })
