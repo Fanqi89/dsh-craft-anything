@@ -19,6 +19,7 @@ window.__ModuleLoader__.load({
     const STATUS_ROUTE = '/craft-anything/api/status'
     const MODE_ROUTE = '/craft-anything/api/mode'
     const ENV_ROUTE = '/craft-anything/api/env'
+    const BRIDGE_ROUTE = '/craft-anything/api/bridge'
     const TOKEN_ROUTE = '/craft-anything/api/token'
 
     // Every management route requires Authorization: Bearer <token>. The token is minted by the
@@ -124,6 +125,19 @@ window.__ModuleLoader__.load({
         cleanHint: 'Clean room is the default: nothing inside the target is read. Deep mode reads code, files and page source — switch it from the mode menu here, in the composer row, or with the craft_mode tool.',
         projectsHint: 'Projects are written to Documents\\Craft Anything unless a command names --project-folder. ',
         projectDocs: 'Project documentation',
+        bridgeLabel: 'Bridge',
+        bridgeOn: 'On',
+        bridgeOff: 'Off',
+        bridgeAllow: 'Tool allowlist',
+        bridgeAllowHint: 'Comma-separated globs; "*" is the only wildcard. Empty means every tool.',
+        bridgeSave: 'Save',
+        bridgeSaved: 'Saved; DSH re-syncs the tool list in about a second.',
+        bridgeTools: 'Tools',
+        bridgePresetAll: 'All tools',
+        bridgePresetCore: 'Core only',
+        bridgePresetInvestigation: 'Investigation',
+        bridgeNote: 'Turning the bridge off, or trimming the allowlist, removes the mcp__craft__* tools from the context without restarting the Harness (the CLI keeps running; a clean/deep mode switch still restarts it).',
+        bridgeChip: 'Bridge',
         envTitle: 'Environment & dependencies',
         envHint: 'Checks the local environment for this machine and installs what is missing. Checks and install commands follow the operating system.',
         envAllOk: 'Everything this plugin needs is present.',
@@ -180,6 +194,19 @@ window.__ModuleLoader__.load({
         cleanHint: '默认是净室模式：不读取目标内部；深度模式会读取代码、文件与页面源码。可在这里的模式菜单、对话框左下角开关或 craft_mode 工具切换。',
         projectsHint: '项目默认写到「文档\\Craft Anything」，除非命令里用 --project-folder 指定。',
         projectDocs: '项目文档',
+        bridgeLabel: 'MCP 桥开关',
+        bridgeOn: '开',
+        bridgeOff: '关',
+        bridgeAllow: '工具白名单',
+        bridgeAllowHint: '逗号分隔的通配符，只支持 "*"。留空=全部工具。',
+        bridgeSave: '保存',
+        bridgeSaved: '已保存，DSH 约 1 秒内重新同步工具列表。',
+        bridgeTools: '工具',
+        bridgePresetAll: '全部工具',
+        bridgePresetCore: '仅核心',
+        bridgePresetInvestigation: '仅调查流程',
+        bridgeNote: '关闭桥或收紧白名单会把 mcp__craft__* 工具从上下文里移除，不需要重启 DSH（CLI 进程保持运行；干净/深度模式切换仍会重启 CLI）。',
+        bridgeChip: '桥',
         envTitle: '环境与依赖',
         envHint: '自动检查本机环境，缺什么就一键装什么；检查项与安装命令按操作系统区分。',
         envAllOk: '本插件需要的环境都已就绪。',
@@ -705,12 +732,115 @@ window.__ModuleLoader__.load({
         h('p', { className: 'dsh-ca-note' }, s.envRestartNote))
     }
 
+    // --- MCP bridge on/off + allowlist -----------------------------------------------------
+    // The host writes <root>/bridge.json and the MCP proxy answers tools/list from it, emitting
+    // notifications/tools/list_changed. Nothing here restarts the bridge: it just re-lists.
+
+    function useBridge() {
+      const [state, setState] = React.useState({ phase: 'loading', data: null })
+      const load = React.useCallback(() => {
+        apiFetch(BRIDGE_ROUTE)
+          .then((response) => (response.ok ? response.json() : Promise.reject(new Error(`bridge route answered HTTP ${response.status}`))))
+          .then((body) => setState({ phase: 'ready', data: body }))
+          .catch((error) => setState((previous) => ({ phase: 'error', data: previous.data, error: String((error && error.message) || error) })))
+      }, [])
+      React.useEffect(() => {
+        load()
+        const interval = setInterval(() => {
+          if (typeof document === 'undefined' || document.visibilityState === 'visible') load()
+        }, 60_000)
+        return () => clearInterval(interval)
+      }, [load])
+      const save = React.useCallback((patch) => apiFetch(BRIDGE_ROUTE, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(patch),
+      }).then((response) => (response.ok ? response.json() : Promise.reject(new Error(`bridge route answered HTTP ${response.status}`))))
+        .then((body) => { setState({ phase: 'ready', data: body }); return body })
+        .catch((error) => { load(); throw error }), [load])
+      return { state, load, save }
+    }
+
+    function BridgeControls(props) {
+      const { bridgeState, s } = props
+      const data = bridgeState.state.data
+      const bridge = data && data.bridge ? data.bridge : { enabled: true, allow: [] }
+      const tools = data && data.tools ? data.tools : null
+      const [draft, setDraft] = React.useState('')
+      const [dirty, setDirty] = React.useState(false)
+      const [saved, setSaved] = React.useState(false)
+      React.useEffect(() => {
+        if (!dirty) setDraft((bridge.allow || []).join(', '))
+      }, [bridge.allow, dirty])
+      const flashSaved = () => { setDirty(false); setSaved(true); setTimeout(() => setSaved(false), 2000) }
+      const apply = (patch) => { bridgeState.save(patch).then(() => { flashSaved(); setTimeout(() => bridgeState.load(), 1600) }).catch(() => {}) }
+      const saveAllow = () => apply({ allow: draft.split(/[,\s]+/).map((entry) => entry.trim()).filter(Boolean) })
+      const presets = [
+        { label: s.bridgePresetAll, allow: [] },
+        { label: s.bridgePresetCore, allow: ['core_*'] },
+        { label: s.bridgePresetInvestigation, allow: ['core_target_*', 'core_investigation_*', 'core_evidence_*', 'core_unknown_*', 'core_finding_*', 'core_hypothesis_*', 'core_report_*', 'core_brief_*', 'core_handoff_*'] },
+      ]
+      return h('div', null,
+        h('div', { className: 'dsh-ca-rows', style: { marginTop: '10px' } },
+          h(Row, { label: s.bridgeLabel },
+            h('span', null,
+              h('button', {
+                className: 'dsh-ca-btn dsh-ca-btn-primary',
+                type: 'button',
+                'aria-pressed': bridge.enabled,
+                onClick: () => apply({ enabled: !bridge.enabled }),
+              }, bridge.enabled ? s.bridgeOn : s.bridgeOff),
+              h('span', { className: 'dsh-ca-muted', style: { marginLeft: '8px', fontSize: '12px' } },
+                tools ? `${s.bridgeTools}: ${tools.visible} / ${tools.total}` : ''))),
+          h(Row, { label: s.bridgeAllow },
+            h('span', { style: { display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' } },
+              h('input', {
+                type: 'text',
+                value: draft,
+                placeholder: 'core_*, session_*',
+                onChange: (event) => { setDirty(true); setDraft(event.target.value) },
+                onKeyDown: (event) => { if (event.key === 'Enter') saveAllow() },
+                style: { flex: '1 1 220px', minWidth: '160px', padding: '4px 8px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'inherit', fontSize: '12px' },
+              }),
+              h('button', { className: 'dsh-ca-btn', type: 'button', onClick: saveAllow, disabled: !dirty }, s.bridgeSave)))),
+        h('div', { style: { display: 'flex', gap: '6px', marginTop: '6px', flexWrap: 'wrap' } },
+          presets.map((preset) => h('button', {
+            key: preset.label,
+            className: 'dsh-ca-btn',
+            type: 'button',
+            onClick: () => apply({ allow: preset.allow }),
+          }, preset.label))),
+        h('p', { className: 'dsh-ca-note' }, saved ? s.bridgeSaved : s.bridgeAllowHint))
+    }
+
+    function BridgeChip() {
+      const bridgeState = useBridge()
+      const [lang] = useLang()
+      const s = STRINGS[lang] || STRINGS.en
+      const data = bridgeState.state.data
+      const bridge = data && data.bridge ? data.bridge : { enabled: true, allow: [] }
+      return h(React.Fragment, null,
+        h('style', null, css),
+        h('button', {
+          type: 'button',
+          className: 'dsh-ca-switch-btn',
+          'data-dsh-craft-anything': 'bridge-chip',
+          'data-deep': String(!bridge.enabled),
+          'aria-pressed': bridge.enabled,
+          title: lang === 'zh' ? 'MCP 桥开关：关掉后 mcp__craft__* 工具从上下文移除（不重启 DSH）' : 'MCP bridge switch: off removes the mcp__craft__* tools from the context (no Harness restart)',
+          onClick: () => { bridgeState.save({ enabled: !bridge.enabled }).then(() => setTimeout(() => bridgeState.load(), 1600)).catch(() => {}) },
+        },
+        h('span', { className: 'dsh-ca-switch-dot', 'aria-hidden': true }),
+        h('span', null, `${s.bridgeChip} ${bridge.enabled ? s.bridgeOn : s.bridgeOff}`)))
+    }
+
     // --- cards -----------------------------------------------------------------------------
 
     function McpCard(props) {
       const { mode, pending, choose } = props.modeState
       const s = props.s
       const lang = props.lang
+      const bridgeState = props.bridgeState
       return h('section', { className: 'dsh-ca-card' },
         h('div', { className: 'dsh-ca-card-head' }, h('h2', null, s.mcpBridge)),
         h('div', { className: 'dsh-ca-rows' },
@@ -719,6 +849,7 @@ window.__ModuleLoader__.load({
           h(Row, { label: s.mode },
             h(ModeSwitch, { mode, pending, onChoose: choose, lang }),
             pending ? h('span', { className: 'dsh-ca-muted', style: { marginLeft: '8px', fontSize: '12px' } }, s.switching) : null)),
+        h(BridgeControls, { bridgeState, s }),
         h('p', { className: 'dsh-ca-note' }, s.mcpNote),
         h('ul', { className: 'dsh-ca-list', style: { marginTop: '8px' } },
           h('li', null, 'core_target_open / core_target_triage — point it at a file, URL or app'),
@@ -761,6 +892,7 @@ window.__ModuleLoader__.load({
       const { state, fetchStatus } = useStatus()
       const modeState = useMode()
       const env = useEnv()
+      const bridgeState = useBridge()
       const langState = useLang()
       const lang = langState[0]
       const [, s] = useStrings()
@@ -775,7 +907,7 @@ window.__ModuleLoader__.load({
             h('div', { className: 'dsh-ca-head-side' }, h(LangSwitch, { langState }))),
           h(EnvCard, { env, s, lang, onSettled: () => fetchStatus(true) }),
           h(StatusCard, { state, fetchStatus, s, lang }),
-          h(McpCard, { modeState, s, lang }),
+          h(McpCard, { modeState, bridgeState, s, lang }),
           h(UsageCard, { s })))
     }
 
@@ -791,6 +923,12 @@ window.__ModuleLoader__.load({
         }, CraftIcon))
         slots.inject('main', () => slots.register({ name: 'main', key: PANEL_ID }, CraftPage))
         // Requested placement: the left of the composer tool row, beside the other mode chip.
+        slots.inject('conversation.input.left', () => slots.register({
+          name: 'conversation.input.left',
+          id: `${PANEL_ID}/bridge`,
+          order: 84,
+          label: () => 'Craft Anything',
+        }, BridgeChip))
         slots.inject('conversation.input.left', () => slots.register({
           name: 'conversation.input.left',
           id: `${PANEL_ID}/mode`,

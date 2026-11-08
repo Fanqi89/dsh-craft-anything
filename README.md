@@ -18,6 +18,7 @@
 | **状态工具** `craft_status` | CLI 路径/版本、是否 portable、工具集与工具数量、可用引擎（chromium/gdb/java/objdump…）、Ghidra 与编码智能体是否就绪、MCP 连接方式。结果缓存 5–10 分钟，`refresh:true` 强制重跑。 |
 | **命令运行器** `craft_cli` | 以参数数组直调 CLI（无 shell）：`rebuild`、`doctor`、`setup`、`report`、`triage`、`commands`、`capabilities` 等。长任务可放大 `timeoutMs`；取消/超时会 SIGKILL 兜底，不会挂住工具调用。 |
 | **安装器** `craft_install` | 从 GitHub Releases 下载官方 CLI 到 `~/.dsh/plugins-data/craft-anything/<版本>/`，**解压前校验 SHA256**（对照 release 的 `SHA256SUMS.txt`），已安装则秒回；成功后自动重启 MCP 桥以使用新 CLI（无需重开 DSH）。Windows 用 portable zip（`scripts/install-cli.ps1`），macOS 用官方 universal CLI zip，Linux 用 release tarball（best effort）。 |
+| **MCP 桥按需开关 / 工具白名单** | 响应 issue #1：桥默认仍全开，但可在页面或输入栏一键关闭（`mcp__craft__*` 工具立即从上下文移除），或用 `allow` 白名单（如 `core_*`）只注册需要的工具；通过 MCP `tools/list_changed` 动态重同步，**不重启 CLI/桥/DSH**。另有 `craft_bridge` 工具。 |
 | **中英文切换** | 页面右上角「中文 / English」分段开关，切换整个页面、模式菜单与所有卡片文案；选择记在 localStorage，首次打开跟随浏览器语言（中文系统自动中文）。 |
 | **环境与依赖（一键补齐）** | 新增「环境与依赖」卡：按操作系统自动检查 CLI、Chromium 浏览器、Claude Code 编码智能体、Ghidra、Java 21+、GDB；可自动安装的项右侧直接「一键安装」（后台任务 + 实时日志），手动项「复制命令」；顶部「一键补齐可自动项」一次处理全部缺失项。 |
 | **状态页** | 左侧栏「Craft Anything」图标 → 中央面板显示本地安装、能力、MCP 桥与常用命令；数据来自插件自己的 `GET /craft-anything/api/status`（默认缓存 60 秒，页面手动刷新走 `?full=1`）。 |
@@ -179,6 +180,20 @@ Host 半边只做三件事：读本地状态、跑本地 CLI、走 DSH 自带的
 - **Ghidra**：如果本机已有 `GHIDRA_INSTALL_DIR`（或安装目录下的 `tools/ghidra_*`），一键安装不走 570 MB 下载，而是把它写进 CLI 设置（`settings_set engines.ghidra.install_dir`），几秒完成；没有现成 Ghidra 时才让 CLI 自己 `engines_install ghidra`（含 Java，耗时几分钟）。
 - **Claude Code**：走 `npm install -g @anthropic-ai/claude-code`（Windows 用 npm 的 JS 入口，避免 `npm.CMD` 的 EINVAL）；装完还要执行一次 `claude` 登录或用 API Key，`rebuild` 才能用。
 - 手动项（Java/GDB/Chromium）给出当前系统对应的命令（winget / brew / apt），点「复制命令」粘贴执行即可。
+
+## MCP 桥按需开关与工具白名单（issue #1）
+
+DSH 的 mcp-client 会把 stdio 服务器列出的每个工具都注册进上下文，所以默认 Essentials（30 个）或 `--all-tools`/深度（107/321 个）的 schema 会一直占 token。v0.4.0 增加了一个 MCP 代理（`scripts/mcp-bridge.cjs`）：
+
+- 桥仍然默认开启、全部工具（升级后行为不变）；
+- 页面「MCP 桥」卡里可以「关」桥、输入白名单（只支持 `*` 通配符）、或用预设（全部 / 仅核心 / 仅调查流程）；对话框左下角也有「桥 开/关」chip；
+- 也可以用工具：`craft_bridge {"enabled": false}` 或 `craft_bridge {"allow": ["core_investigation_*","core_evidence_*"]}`；
+- 状态存在 `<root>/bridge.json`（`{"enabled":true,"allow":[]}`），代理监听它并向 DSH 发 `notifications/tools/list_changed`，约 1 秒内上下文里的工具就增减完毕，**不需要重启 CLI、桥或 DSH**；
+- 干净/深度模式切换仍会重启 CLI（上游模式在启动时固定），重启后自动沿用 `bridge.json`。
+
+实测（0.2.1-rc.5 / craft-anything 0.5.0）：30 个工具 → 白名单后 5 个 → 关闭后 0 个（调用被拒）→ 重开 30 个，全程同一个 CLI pid。
+
+> 白名单只裁剪 DSH 上下文里的 tool schema，不改变 CLI 内部工具集；要更多工具仍用 `mcp__craft__list_toolsets` / `enable_toolset`，或用白名单只挑常用组。
 
 ## 安全：管理接口鉴权
 

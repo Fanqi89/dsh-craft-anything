@@ -723,6 +723,144 @@ function tokenRouteHandler(auth) {
 }
 
 
+// --- MCP bridge on/off + tool allowlist ---------------------------------------------------------
+// The DSH mcp-client registers every tool a stdio server lists, so the Essentials toolset alone puts
+// ~30 schemas in every request. scripts/mcp-bridge.cjs (copied next to the launcher) proxies the
+// CLI stdio and filters tools/list from <root>/bridge.json; it emits notifications/tools/list_changed
+// so dsh-mcp-client re-syncs the context without restarting the CLI or the Harness.
+
+const BRIDGE_ROUTE = '/craft-anything/api/bridge'
+const BRIDGE_FILE = 'bridge.json'
+const DEFAULT_BRIDGE = { enabled: true, allow: [] }
+
+function bridgeFile(config = {}) {
+  return path.join(installRoot(config), BRIDGE_FILE)
+}
+
+function readBridge(config = {}) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(bridgeFile(config), 'utf8'))
+    return {
+      enabled: !(parsed && parsed.enabled === false),
+      allow: parsed && Array.isArray(parsed.allow)
+        ? parsed.allow.filter((entry) => typeof entry === 'string' && entry.trim()).map((entry) => entry.trim())
+        : [],
+      updatedAt: parsed && typeof parsed.updatedAt === 'string' ? parsed.updatedAt : null,
+    }
+  } catch {
+    return { enabled: DEFAULT_BRIDGE.enabled, allow: DEFAULT_BRIDGE.allow.slice(), updatedAt: null }
+  }
+}
+
+function writeBridge(config = {}, patch = {}) {
+  const current = readBridge(config)
+  const next = {
+    enabled: typeof patch.enabled === 'boolean' ? patch.enabled : current.enabled,
+    allow: Array.isArray(patch.allow)
+      ? patch.allow.filter((entry) => typeof entry === 'string' && entry.trim()).map((entry) => entry.trim())
+      : current.allow,
+    updatedAt: new Date().toISOString(),
+  }
+  fs.mkdirSync(installRoot(config), { recursive: true })
+  fs.writeFileSync(bridgeFile(config), `${JSON.stringify(next, null, 2)}\n`)
+  return next
+}
+
+function bridgeReport(config = {}) {
+  const bridge = readBridge(config)
+  let state = null
+  try { state = JSON.parse(fs.readFileSync(stateFile(config), 'utf8')) } catch { /* bridge not running */ }
+  return {
+    ok: true,
+    bridge,
+    bridgeFile: bridgeFile(config),
+    tools: state && state.tools && Number.isFinite(state.tools.visible) ? state.tools : null,
+    server: state
+      ? { mode: state.mode === 'deep' ? 'deep' : 'clean', pid: Number.isFinite(state.pid) ? state.pid : null, startedAt: typeof state.startedAt === 'string' ? state.startedAt : null }
+      : null,
+  }
+}
+
+function bridgeTool(config) {
+  return {
+    name: 'craft_bridge',
+    description:
+      'Turn the MCP bridge on/off and limit which mcp__craft__* tools DSH registers in the context. The bridge proxy answers tools/list from <root>/bridge.json and emits notifications/tools/list_changed, so dsh-mcp-client re-syncs in about a second without restarting the CLI or the Harness (a clean/deep mode switch still restarts the CLI, because mode is fixed at startup). With no arguments it only reports the current state. Pattern syntax: "*" wildcard only, matched case-insensitively against the tool name; an empty allow list allows every tool.',
+    parameters: {
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean', description: 'false removes every mcp__craft__* tool from the context; true brings them back.' },
+        allow: { type: 'array', items: { type: 'string' }, description: 'Glob patterns such as ["core_*","session_*"]; empty array allows every tool.' },
+      },
+    },
+    output: {
+      schema: { type: 'object' },
+      render: (_args, value) => {
+        const tools = value.tools ? `${value.tools.visible} visible of ${value.tools.total}` : 'not listed yet'
+        return [{
+          type: 'text',
+          text: [
+            `MCP bridge: ${value.bridge.enabled ? 'on' : 'off'}`,
+            `  allow: ${value.bridge.allow.length ? value.bridge.allow.join(', ') : '(all tools)'}`,
+            `  tools: ${tools}`,
+            `  bridge file: ${value.bridgeFile}`,
+            'note: dsh-mcp-client re-syncs after notifications/tools/list_changed (about 1 s).',
+          ].join('\n'),
+        }]
+      },
+    },
+    async execute(args) {
+      const patch = {}
+      if (typeof args?.enabled === 'boolean') patch.enabled = args.enabled
+      if (Array.isArray(args?.allow)) patch.allow = args.allow.map(String)
+      if (patch.enabled !== undefined || patch.allow !== undefined) writeBridge(config, patch)
+      return bridgeReport(config)
+    },
+  }
+}
+
+function bridgeRouteHandler(getSettings) {
+  return async (req, res) => {
+    const send = (code, payload) => {
+      res.statusCode = code
+      res.setHeader('content-type', 'application/json; charset=utf-8')
+      res.setHeader('cache-control', 'no-store')
+      res.end(JSON.stringify(payload))
+    }
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      try {
+        send(200, bridgeReport(getSettings()))
+      } catch (error) {
+        send(500, { ok: false, error: String(error && error.message ? error.message : error) })
+      }
+      return
+    }
+    if (req.method !== 'POST') {
+      send(405, { ok: false, error: 'GET or POST only' })
+      return
+    }
+    const body = await readJsonBody(req, 16 * 1024)
+    if (!body || typeof body !== 'object') {
+      send(400, { ok: false, error: 'body must be {"enabled":boolean,"allow":["core_*"]}' })
+      return
+    }
+    try {
+      const patch = {}
+      if (typeof body.enabled === 'boolean') patch.enabled = body.enabled
+      if (Array.isArray(body.allow)) patch.allow = body.allow.map(String)
+      if (patch.enabled === undefined && patch.allow === undefined) {
+        send(400, { ok: false, error: 'body must contain enabled and/or allow' })
+        return
+      }
+      writeBridge(getSettings(), patch)
+      send(200, bridgeReport(getSettings()))
+    } catch (error) {
+      send(500, { ok: false, error: String(error && error.message ? error.message : error) })
+    }
+  }
+}
+
+
 const STATUS_ROUTE = '/craft-anything/api/status'
 const MODE_ROUTE = '/craft-anything/api/mode'
 
@@ -1280,7 +1418,14 @@ export function apply(ctx, config) {
     trustedHosts: Array.isArray(raw.trustedHosts) ? raw.trustedHosts : [],
     allowNonLoopback: raw.allowNonLoopback === true,
   }
-  const definitions = [statusTool(settings), cliTool(settings), installTool(settings), modeTool(settings)]
+  // The MCP proxy is copied next to the launcher so the inline `-e` script can require it; if the
+  // copy fails the launcher falls back to a plain pass-through until the next apply.
+  try {
+    fs.mkdirSync(installRoot(settings), { recursive: true })
+    fs.copyFileSync(path.join(PACKAGE_DIR, 'scripts', 'mcp-bridge.cjs'), path.join(installRoot(settings), 'mcp-bridge.cjs'))
+  } catch { /* launcher falls back to pass-through */ }
+
+  const definitions = [statusTool(settings), cliTool(settings), installTool(settings), modeTool(settings), bridgeTool(settings)]
   ctx.effect(() => {
     const disposers = []
     try {
@@ -1319,6 +1464,10 @@ export function apply(ctx, config) {
     webCtx.effect(
       () => webCtx.webServer.register({ kind: 'exact', path: ENV_ROUTE, handler: guarded(envRouteHandler(() => settings), httpAuth) }),
       'dsh-craft-anything: environment route',
+    )
+    webCtx.effect(
+      () => webCtx.webServer.register({ kind: 'exact', path: BRIDGE_ROUTE, handler: guarded(bridgeRouteHandler(() => settings), httpAuth) }),
+      'dsh-craft-anything: bridge route',
     )
   })
 }

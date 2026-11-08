@@ -1,5 +1,38 @@
 # 更新日志
 
+## [v0.4.0] - 2026-11-08
+
+MCP 桥按需连接：新增桥开关与工具白名单（回应 issue #1「避免 300+ 工具常驻上下文」）。功能行为不变，新增的是可控性。
+
+### 新增
+
+- **MCP 代理（`scripts/mcp-bridge.cjs`）**：启动器不再把 stdio 直接透传给 `craft-anything-cli mcp`，而是经过一个 JSON-RPC 代理。代理按 `<root>/bridge.json` 过滤 `tools/list`（隐藏不在白名单里的工具），并对被隐藏工具的 `tools/call` 直接返回错误。
+- **动态重同步、不重启**：`bridge.json` 变化时代理向 DSH 发 `notifications/tools/list_changed`；`dsh-mcp-client` 订阅该通知并重新 `listTools()`（其 SDK 的 `onChanged → refreshTools`），约 1 秒内上下文里的 `mcp__craft__*` 工具就增减完毕。**CLI、桥进程与 DSH 都不重启，pid 不变**。
+- **`craft_bridge` 工具**：`{enabled?, allow?}` 设置或读取状态，返回可见/总数；`allow` 是只支持 `*` 的通配符列表，空数组=全部工具。
+- **页面与输入栏控制**：MCP 桥卡新增「MCP 桥开关（开/关）+ 工具计数（visible/total）+ 工具白名单输入框 + 保存 + 预设（全部工具 / 仅核心 / 仅调查流程）」；对话框左下角新增「桥 开/关」chip（order 84，紧邻净室/深度模式开关），中英文双语。
+- 新增 HTTP 路由 `GET/POST /craft-anything/api/bridge`（与 status/mode/env 一样受鉴权守卫）。
+
+### 设计说明
+
+- 默认仍是**开启且全部工具**，升级后行为不变；需要省 token 的用户在页面点「关」或用白名单裁剪即可，也可以写 `bridge.json`。
+- 白名单只影响 DSH 上下文里注册的 tool schema，不改变 CLI 内部工具集；需要更多工具时仍用 `mcp__craft__list_toolsets` / `enable_toolset`，或用 allow 白名单挑常用组。
+- 干净/深度模式切换仍会重启 CLI（上游模式在启动时固定），重启后代理自动重新读 `bridge.json`。
+
+### 兼容与回退
+
+- Host 半在 apply 时把代理写到 `<root>/mcp-bridge.cjs`；启动器最多等 5 秒加载它，加载失败则回退旧的直连方式（升级时序不会把桥弄坏）。
+- `engines.dsh` 仍为 `>=0.2.1-rc.2`；只用 mcp-client 已支持的 `notifications/tools/list_changed` 与 stdio JSON-RPC。
+
+### 验证
+
+- 独立 node 测试（真实 craft-anything-cli 0.5.0）：initialize/tools/list 30 → 白名单 `core_investigation_*,core_evidence_*` 后 5 个、收到 `list_changed` → 关闭后 0 个且 `tools/call` 被拒 → 重开 30 个；mode.json 改动后进程以 0 退出。
+- DSH 真机（0.2.1-rc.5）：`craft_bridge` 设白名单后 `mcp.state.json` 记录 `tools:{total:30,visible:5}`；关闭后工具从上下文消失（调用报 unknown tool），重开后恢复 30 个；两次变更 pid 均保持 8268（未重启）。页面「仅调查流程」预设点击后 visible=18，恢复「全部工具」后 30/30。
+
+### 已知限制
+
+- 代理是行分帧的 JSON-RPC 转发，不解析工具内容；极大的 `tools/list`（321 工具约 350KB 单行）仍会一次性缓冲，但正常使用无影响。
+- 白名单匹配只支持 `*`（不支持 `?`/正则）；大小写不敏感。
+
 ## [v0.3.1] - 2026-11-08
 
 安全修复：Web 管理接口接入宿主认证 + Bearer Token + Host/Origin 双校验。功能行为不变。

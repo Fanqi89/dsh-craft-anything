@@ -36,6 +36,9 @@
 #   - CRAFT_ANYTHING_MCP_ARGS adds CLI flags for the MCP server, e.g. `--all-tools` (107 tools;
 #     with deep mode 321, but that is ~346 KB of tool schemas on every request — weigh it).
 #     Do not put --deep/--clean-room there: the mode file owns those.
+#   - scripts/mcp-bridge.cjs proxies the stdio server and filters tools/list from <root>/bridge.json
+#     ({"enabled":true,"allow":["core_*"]}): toggling it emits notifications/tools/list_changed so
+#     dsh-mcp-client re-registers tools without restarting the CLI, the bridge or the Harness.
 #   - toolCallTimeoutMs is raised because archive/investigation tools can outlive 60 s.
 #   - reconnect is capped so a broken CLI fails fast instead of retrying for minutes.
 #   - failOnStartupError stays false: without the CLI the Harness still boots and the tools
@@ -74,8 +77,7 @@
             try{for(const d of fs.readdirSync(root,{withFileTypes:true})){if(!d.isDirectory())continue;const p=path.join(root,d.name,exe);if(!seen.has(p))cands.push(p)}}catch{}
             const cli=cands.find(p=>{try{return Boolean(p)&&fs.statSync(p).isFile()}catch{return false}});
             if(!cli){console.error('[dsh-craft-anything] craft-anything-cli not found under '+root+' and not on CRAFT_ANYTHING_CLI; run the craft_install tool, then reload the plugin.');process.exit(2)}
-            const modeFile=path.join(root,'mode.json'),stateFile=path.join(root,'mcp.state.json'),restartFile=path.join(root,'mcp.restart'),envFile=path.join(root,'env.json');
-            const startedAtMs=Date.now();
+            const modeFile=path.join(root,'mode.json'),stateFile=path.join(root,'mcp.state.json'),envFile=path.join(root,'env.json');
             let extraEnv={};
             try{const e=JSON.parse(fs.readFileSync(envFile,'utf8'));if(e&&typeof e==='object'&&!Array.isArray(e))extraEnv=e}catch{}
             const readMode=()=>{try{const m=JSON.parse(fs.readFileSync(modeFile,'utf8'));return m&&m.mode==='deep'?'deep':'clean'}catch{return 'clean'}};
@@ -88,15 +90,23 @@
             const extra=(process.env.CRAFT_ANYTHING_MCP_ARGS||'').split(/\s+/).filter(Boolean);
             const argv=['mcp'].concat(extra);
             if(modeFlags)argv.push(mode==='deep'?'--deep':'--clean-room');
-            const child=spawn(cli,argv,{stdio:'inherit',windowsHide:true,env:Object.assign({},process.env,extraEnv)});
-            try{fs.mkdirSync(root,{recursive:true});fs.writeFileSync(stateFile,JSON.stringify({mode,args:argv,pid:child.pid,startedAt:new Date().toISOString(),cli,cliMtimeMs,modeFlags,version}))}catch{}
-            let stopping=false,killTimer=null,finalTimer=null;
-            const stop=()=>{if(stopping)return;stopping=true;try{child.kill('SIGTERM')}catch{};setTimeout(()=>{try{child.kill('SIGTERM')}catch{}},150).unref();killTimer=setTimeout(()=>{try{child.kill('SIGKILL')}catch{}},1200);finalTimer=setTimeout(()=>process.exit(0),2500);if(killTimer.unref)killTimer.unref();if(finalTimer.unref)finalTimer.unref()};
-            try{fs.watch(modeFile,{persistent:false},()=>stop())}catch{}
-            const poll=setInterval(()=>{try{if(readMode()!==mode)return stop();if(fs.statSync(restartFile).mtimeMs>startedAtMs)return stop()}catch{}},1000);if(poll.unref)poll.unref();
-            child.on('error',e=>{console.error('[dsh-craft-anything] cannot start '+cli+': '+e.message);process.exit(1)});
-            child.on('exit',(code,sig)=>{clearInterval(poll);if(killTimer)clearTimeout(killTimer);if(finalTimer)clearTimeout(finalTimer);process.exit(stopping?0:(code===null?(sig?1:0):code))});
-            for(const s of['SIGTERM','SIGINT','SIGHUP'])process.on(s,stop);
+            const state={cli,cliMtimeMs,modeFlags,version};
+            const bridgePath=path.join(root,'mcp-bridge.cjs');
+            let bridge=null;
+            for(let attempt=0;attempt<50&&!bridge;attempt++){try{bridge=require(bridgePath)}catch{bridge=null;try{Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,100)}catch{}}}
+            if(bridge&&typeof bridge.start==='function'){
+              bridge.start({cli,root,mode,argv,env:extraEnv,meta:state});
+            } else {
+              const child=spawn(cli,argv,{stdio:'inherit',windowsHide:true,env:Object.assign({},process.env,extraEnv)});
+              try{fs.mkdirSync(root,{recursive:true});fs.writeFileSync(stateFile,JSON.stringify(Object.assign({mode,args:argv,pid:child.pid,startedAt:new Date().toISOString()},state)))}catch{}
+              let stopping=false,killTimer=null,finalTimer=null;
+              const stop=()=>{if(stopping)return;stopping=true;try{child.kill('SIGTERM')}catch{};setTimeout(()=>{try{child.kill('SIGTERM')}catch{}},150).unref();killTimer=setTimeout(()=>{try{child.kill('SIGKILL')}catch{}},1200);finalTimer=setTimeout(()=>process.exit(0),2500);if(killTimer.unref)killTimer.unref();if(finalTimer.unref)finalTimer.unref()};
+              try{fs.watch(modeFile,{persistent:false},()=>stop())}catch{}
+              const poll=setInterval(()=>{try{if(readMode()!==mode)return stop()}catch{}},1000);if(poll.unref)poll.unref();
+              child.on('error',e=>{console.error('[dsh-craft-anything] cannot start '+cli+': '+e.message);process.exit(1)});
+              child.on('exit',(code,sig)=>{clearInterval(poll);if(killTimer)clearTimeout(killTimer);if(finalTimer)clearTimeout(finalTimer);process.exit(stopping?0:(code===null?(sig?1:0):code))});
+              for(const s of['SIGTERM','SIGINT','SIGHUP'])process.on(s,stop);
+            }
         toolCallTimeoutMs: 600000
         failOnStartupError: false
         reconnect:
