@@ -1,5 +1,25 @@
 # 更新日志
 
+## [v0.5.1] - 2026-11-11
+
+v0.5.0 的更新/重启链路在两处边界上修正：多实例（独立 `DSH_HOME`）里的更新只动自己那个 profile；从命令行启动的 DSH 重启后仍然是同一条 CLI 服务，而不是弹出一个桌面窗口。
+
+### 修复
+
+- **更新会改错 profile（多实例）**：`findProfile()` 原来只看 `~/.dsh/profiles`，因此在独立 `DSH_HOME`（探针/测试实例）里点「立即更新」会去改默认 home 里的 profile。现在优先用 `DSH_HOME` 定位 profiles，更新只落在点击按钮的那个实例。
+- **命令行启动的 DSH 重启成了桌面窗口**：`dsh web --profile X --port N` 是用 `DeepSeek Harness.exe` + `ELECTRON_RUN_AS_NODE` 跑 `cli.js`，`process.execPath` 是 app 二进制；原启动命令只写回 `[exe]`，重启会打开 GUI。现在识别 CLI 模式，用 `[exe, cli.js, --profile X, …原参数]` 重新拉起，并避免重复追加已经在 argv 里的 `--profile`（重复会让 commander 直接退出）。
+- **第二次重启被误拒**：helper 成功后没有清理 `<root>/restart.pending.json`，120 秒内的下一次重启会被当成"已在重启中"。现在把 pending marker 传给 helper，成功拉起后删除。
+
+### 验证
+
+- 探针实例（独立 `DSH_HOME`、隔离插件数据 root、端口 51235）走完整页面链路：0.4.0 副本 → 「检查更新」显示 **有新版本 v0.5.0** → 弹窗「先 v0.4.0 → v0.5.0 + 更新说明」→ 「立即更新」→ pnpm 安装 **49.8 s**、profile 依赖变为 `github:Fanqi89/dsh-craft-anything#v0.5.0` → 自动弹出「重启 DeepSeek Harness？」→ 「立即重启」→ `restart.log` 记录 `the Harness stopped` / `relaunched pid 6980`，新进程在同一端口监听（HTTP 401 = 服务已起），profile 仍为 `probe`。
+- 回归：桥 `41/41`、安装器 `12/12`、重启 helper（stand-in 进程，含 pid 已消失路径）全绿、`tests/update/check.mjs` 全绿。
+
+### 已知限制
+
+- 重启后端口可能变化；桌面版会重新打开窗口，CLI 版沿用原端口（若端口被占用则新进程会换端口，日志里能看到）。
+- 走 GitHub 的更新仍需要 GitHub 可达（直连或 `HTTPS_PROXY`/`env.json`）。
+
 ## [v0.5.0] - 2026-11-11
 
 回应 B 站实测视频（BV13n4J6yEhY）与来信里提到的两个问题：模式切换不再打断在途调用、Linux/macOS 一键安装 CLI 修好（并支持手动指定 CLI 路径）；同时按需求在环境卡加了「检查更新」按钮：查 GitHub 最新版本 → 一键安装 → 询问是否重启 DSH。

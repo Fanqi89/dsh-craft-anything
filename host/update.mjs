@@ -197,7 +197,11 @@ export function createUpdateService(deps) {
 
   /** The profile that depends on this plugin (the one an update has to touch). */
   function findProfile() {
-    const root = path.join(homeDir(), '.dsh', 'profiles')
+    // The Harness keeps profiles under $DSH_HOME/profiles; DSH_HOME defaults to ~/.dsh, but a
+    // second instance (or tests/update/install-probe) can run against its own home. Honouring it
+    // keeps an update inside the instance whose page the button was clicked on.
+    const dshHome = process.env.DSH_HOME || path.join(homeDir(), '.dsh')
+    const root = path.join(dshHome, 'profiles')
     let names = []
     try {
       names = fs.readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name)
@@ -378,14 +382,28 @@ export function createUpdateService(deps) {
 
   function relaunchCommand() {
     const exe = process.execPath
+    const argv = process.argv || []
+    // CLI/server mode: `dsh` runs the desktop executable with ELECTRON_RUN_AS_NODE and
+    // argv[1] = .../dsh-desktop-host/lib/cli.js. Relaunch that same CLI invocation with this
+    // profile instead of starting a desktop window the user never asked for.
+    const entry = argv[1]
+    if (entry && /[\\/]cli\.js$/i.test(entry) && existsFile(entry)) {
+      const rest = argv.slice(2)
+      // `dsh --profile X` may already have passed the profile through to the app argv; adding it
+      // again makes commander reject the relaunch (the process exits immediately).
+      const hasProfile = rest.some((value) => value === '--profile' || String(value).startsWith('--profile='))
+      const profile = hasProfile ? null : findProfile().profile
+      const profileArgs = profile ? ['--profile', profile] : []
+      return { cmd: [exe, entry, ...profileArgs, ...rest], how: 'the Harness CLI with this profile and arguments' }
+    }
     if (!IS_WINDOWS && process.platform === 'darwin') {
       const index = exe.indexOf('.app/')
       if (index > 0) return { cmd: ['open', '-n', exe.slice(0, index + 4)], how: 'open -n (macOS bundle)' }
     }
     if (IS_WINDOWS && /DeepSeek Harness(\.exe)?$/i.test(exe)) return { cmd: [exe], how: 'the Harness executable' }
     const base = path.basename(exe).toLowerCase()
-    if (/^node(\.exe)?$/.test(base) && process.argv && process.argv[1]) {
-      return { cmd: [exe, ...process.argv.slice(1)], how: 'node + the Harness CLI arguments' }
+    if (/^node(\.exe)?$/.test(base) && argv[1]) {
+      return { cmd: [exe, ...argv.slice(1)], how: 'node + the Harness CLI arguments' }
     }
     return { cmd: [exe], how: 'the current executable' }
   }
@@ -410,7 +428,7 @@ export function createUpdateService(deps) {
         detached: true,
         stdio: 'ignore',
         windowsHide: true,
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', CRAFT_ANYTHING_RESTART_MARKER: pendingRestartFile() },
       })
       child.unref()
       return { ok: true, pid: process.pid, helper, relaunch: launch.cmd, how: launch.how, logFile, note: 'the Harness stops in under a second and is launched again; reload this page when it is back' }
