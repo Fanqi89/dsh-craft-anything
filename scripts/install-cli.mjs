@@ -56,6 +56,7 @@ import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join, relative, sep } from 'node:path'
+import { githubCandidates, rankSync } from './mirrors.mjs'
 
 const REPO = 'storytold/craft-anything'
 const RELEASES_PAGE = `https://github.com/${REPO}/releases`
@@ -302,6 +303,14 @@ function locateCli(root) {
   return null
 }
 
+/** Download bases in order: fastest mirror first, github.com last. Tests keep one base. */
+function sourceBases(tag) {
+  if (DOWNLOAD_BASE !== DEFAULT_DOWNLOAD_BASE) return [DOWNLOAD_BASE + '/' + tag]
+  const probe = githubCandidates(`${DEFAULT_DOWNLOAD_BASE}/${tag}/SHA256SUMS.txt`)
+  const ranked = rankSync(probe)
+  return ranked.map((url) => url.replace(/\/SHA256SUMS\.txt$/, ''))
+}
+
 function topLevelEntries(root) {
   try { return readdirSync(root).slice(0, 12) } catch { return [] }
 }
@@ -388,23 +397,43 @@ try {
   const work = mkdtempSync(join(tmpdir(), 'craft-anything-'))
   try {
     const archive = join(work, asset.name)
-    download(asset.url, archive, `the release archive ${asset.name}`)
     const sumsPath = join(work, 'SHA256SUMS.txt')
-    download(`${DOWNLOAD_BASE}/${tag}/SHA256SUMS.txt`, sumsPath, 'SHA256SUMS.txt (checksum verification is mandatory)')
+    const bases = sourceBases(tag)
+    if (bases.length > 1) log(`download sources: ${bases.join(' | ')}`)
 
-    const sums = parseSums(readFileSync(sumsPath, 'utf8'))
-    const expected = sums.get(asset.name)
-    if (!expected) {
-      const closest = closestNames([...sums.keys()], asset)
-      throw new Error(`${asset.name} is not listed in SHA256SUMS.txt (${sums.size} entries); refusing to install an unverified file`
-        + (closest.length ? `\nclosest SHA256SUMS.txt entries: ${closest.join(', ')}` : '')
-        + `\n${PROVIDER_HINT}, or install from source: cargo install --path apps/craft-anything-cli`)
+    // A mirror only serves bytes: the checksum decides whether they are the official archive, so a
+    // bad/truncated mirror download simply moves on to the next source.
+    let usedBase = null
+    let checksum = null
+    const failures = []
+    for (const base of bases) {
+      try {
+        download(`${base}/${asset.name}`, archive, `the release archive ${asset.name}`)
+        download(`${base}/SHA256SUMS.txt`, sumsPath, 'SHA256SUMS.txt (checksum verification is mandatory)')
+        const sums = parseSums(readFileSync(sumsPath, 'utf8'))
+        const expected = sums.get(asset.name)
+        if (!expected) {
+          const closest = closestNames([...sums.keys()], asset)
+          throw new Error(`${asset.name} is not listed in SHA256SUMS.txt (${sums.size} entries); refusing to install an unverified file`
+            + (closest.length ? `\nclosest SHA256SUMS.txt entries: ${closest.join(', ')}` : '')
+            + `\n${PROVIDER_HINT}, or install from source: cargo install --path apps/craft-anything-cli`)
+        }
+        const actual = sha256(archive)
+        if (actual !== expected) {
+          throw new Error(`sha256 mismatch for ${asset.name}\n  expected ${expected}\n  actual   ${actual}\nrefusing to install a corrupt or tampered download; re-run the installer, or ${PROVIDER_HINT}`)
+        }
+        usedBase = base
+        checksum = actual
+        break
+      } catch (error) {
+        failures.push(`${base}: ${String((error && error.message) || error).slice(0, 600)}`)
+        log(`source failed: ${firstLine(error)}`)
+      }
     }
-    const actual = sha256(archive)
-    if (actual !== expected) {
-      throw new Error(`sha256 mismatch for ${asset.name}\n  expected ${expected}\n  actual   ${actual}\nrefusing to install a corrupt or tampered download; re-run the installer, or ${PROVIDER_HINT}`)
+    if (!usedBase) {
+      throw new Error(`every download source failed:\n  ${failures.join('\n  ')}`)
     }
-    log(`sha256 ok: ${actual}`)
+    log(`sha256 ok: ${checksum}`)
 
     const unpacked = join(work, 'unpacked')
     mkdirSync(unpacked, { recursive: true })

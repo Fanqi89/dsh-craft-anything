@@ -16,6 +16,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createUpdateService, UPDATE_ROUTE, RESTART_ROUTE, RESTART_SCRIPT } from './update.mjs'
+import { rankNpmRegistries } from '../scripts/mirrors.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const PACKAGE_DIR = path.resolve(HERE, '..')
@@ -1201,9 +1202,16 @@ async function runCliInstaller(config, options = {}) {
   const signal = options.signal
   if (IS_WINDOWS) {
     if (!existsFile(INSTALLER)) throw new Error(`installer script is missing from the plugin package: ${INSTALLER}`)
-    const argv = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', INSTALLER, '-Version', version]
-    if (force) argv.push('-Force')
-    if (config.installDir) argv.push('-Root', config.installDir)
+    // -Command plus a UTF-8 console: Windows PowerShell otherwise prints its localized errors in
+    // the ANSI codepage, which the page showed as mojibake instead of the real message.
+    const single = (value) => String(value).replace(/'/g, "''")
+    const command = [
+      '[Console]::OutputEncoding=[Text.Encoding]::UTF8',
+      "$ProgressPreference='SilentlyContinue'",
+      '[Net.ServicePointManager]::SecurityProtocol=[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12',
+      "& '" + single(INSTALLER) + "' -Version '" + single(version) + "'" + (force ? ' -Force' : '') + (config.installDir ? " -Root '" + single(config.installDir) + "'" : ''),
+    ].join('; ')
+    const argv = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command]
     return run('powershell.exe', argv, { timeoutMs: 900_000, signal, env: envForChild(config) })
   }
   if (!existsFile(INSTALLER_NODE)) throw new Error(`installer script is missing from the plugin package: ${INSTALLER_NODE}`)
@@ -1215,42 +1223,119 @@ async function runCliInstaller(config, options = {}) {
 }
 
 async function installCodingAgentInto(config, job) {
-  const npm = which('npm') || which('npm.cmd') || which('npm.exe')
   const packageName = '@anthropic-ai/claude-code'
-  const runNpmInstall = async (command, argv) => {
-    jobDetail(job, 'installing the Claude Code CLI')
+  const npm = which('npm') || which('npm.cmd') || which('npm.exe')
+  // The Harness can run from Electron or from its own CLI; the bundled pnpm lives in the
+  // installation directory either way, but process.execPath is not always that directory.
+  const roots = []
+  if (typeof process.resourcesPath === 'string') roots.push(path.dirname(process.resourcesPath))
+  const entry = process.argv && process.argv[1]
+  if (entry) {
+    const match = /^(.*?)[\\/]resources[\\/]app\.asar[\\/]/.exec(entry)
+    if (match) roots.push(match[1])
+  }
+  roots.push(path.dirname(process.execPath))
+  const pnpmCandidates = roots.map((root) => path.join(root, 'resources', 'runtime', 'pnpm', 'bin', 'pnpm.mjs'))
+  const pnpmScript = pnpmCandidates.find(existsFile) || null
+  const npmJsOf = (command) => (/[\\/]npm(\.cmd|\.exe)?$/i.test(command) ? path.join(path.dirname(command), 'node_modules', 'npm', 'bin', 'npm-cli.js') : null)
+  const freshNpmJs = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'nodejs', 'node_modules', 'npm', 'bin', 'npm-cli.js')
+  const registries = await rankNpmRegistries()
+  jobLog(job, 'npm: ' + (npm || 'not on PATH') + '; pnpm: ' + (pnpmScript || 'not found') + '; registries: ' + registries.join(', '))
+
+  const install = async (command, argv, label) => {
+    jobDetail(job, label)
     jobLog(job, command + ' ' + argv.join(' '))
-    // Windows: npm.CMD cannot be spawned directly (Node refuses .cmd without a shell, and the
-    // shell path needs quoting), so run npm own JS entry through the Harness Node instead.
-    let result
-    const npmJs = /[\\/]npm(\.cmd|\.exe)?$/i.test(command)
-      ? path.join(path.dirname(command), 'node_modules', 'npm', 'bin', 'npm-cli.js')
-      : null
-    if (npmJs && existsFile(npmJs)) {
-      result = await run(process.execPath, [npmJs, ...argv], {
-        timeoutMs: 900_000,
-        env: { ...envForChild(config), ELECTRON_RUN_AS_NODE: '1' },
-      })
-    } else {
-      result = await run(command, argv, { timeoutMs: 900_000, env: envForChild(config) })
-    }
+    const result = await run(command, argv, { timeoutMs: 900_000, env: { ...envForChild(config), ELECTRON_RUN_AS_NODE: '1' } })
     jobLog(job, [result.stdout, result.stderr].filter(Boolean).join('\n'))
-    if (result.code !== 0) throw new Error(command + ' exited ' + result.code + ': ' + (result.stderr || '').trim().slice(0, 400))
+    if (result.code !== 0) throw new Error(label + ' exited ' + result.code + ': ' + (result.stderr || result.stdout || '').trim().slice(0, 400))
   }
-  if (npm) {
-    await runNpmInstall(npm, ['install', '-g', packageName])
-    jobLog(job, 'done; sign in once with `claude` (or set an API key) before rebuild can use it')
+  const attempts = []
+  for (const registry of registries.slice(0, 2)) {
+    if (npm) {
+      const npmJs = npmJsOf(npm)
+      const viaJs = Boolean(npmJs && existsFile(npmJs))
+      const argv = viaJs ? [npmJs, 'install', '-g', packageName, '--registry=' + registry] : ['install', '-g', packageName, '--registry=' + registry]
+      attempts.push(() => install(viaJs ? process.execPath : npm, argv, 'npm install (registry ' + registry + ')'))
+    } else if (pnpmScript) {
+      attempts.push(() => install(process.execPath, [pnpmScript, 'add', '-g', packageName, '--registry=' + registry], 'pnpm add (registry ' + registry + ')'))
+    }
+  }
+  if (attempts.length === 0 && IS_WINDOWS) {
+    const winget = which('winget') || which('winget.exe')
+    if (winget) {
+      attempts.push(async () => {
+        await install(winget, ['install', '-e', '--id', 'OpenJS.NodeJS.LTS', '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity'], 'winget install Node.js LTS')
+        if (!existsFile(freshNpmJs)) throw new Error('Node.js was installed but npm-cli.js was not found at ' + freshNpmJs)
+        await install(process.execPath, [freshNpmJs, 'install', '-g', packageName, '--registry=' + registries[0]], 'npm install with the new Node.js')
+      })
+    }
+  }
+  if (attempts.length === 0) {
+    throw new Error('Neither npm nor the Harness pnpm wrapper was found. Install Node.js/npm first (Windows: winget install -e --id OpenJS.NodeJS.LTS), then retry.')
+  }
+  const failures = []
+  for (const attempt of attempts) {
+    try {
+      await attempt()
+      jobLog(job, 'done; run the claude command once (or set an API key) before rebuild can use it')
+      return
+    } catch (error) {
+      failures.push(String((error && error.message) || error))
+      jobLog(job, 'attempt failed; trying the next source')
+    }
+  }
+  throw new Error('every install attempt failed: ' + failures.join(' | '))
+}
+const PACKAGE_SPECS = {
+  chromium: { winget: 'Google.Chrome', brew: ['install', '--cask', 'google-chrome'], apt: 'chromium-browser', label: 'a Chromium based browser' },
+  java: { winget: 'EclipseAdoptium.Temurin.21.JDK', brew: ['install', '--cask', 'temurin@21'], apt: 'openjdk-21-jdk', label: 'Java 21+' },
+  gdb: { winget: null, brew: ['install', 'gdb'], apt: 'gdb', label: 'GDB' },
+}
+
+/** One-click install for the dependencies that used to be copy-a-command only. */
+async function installPackageInto(config, job, id) {
+  const spec = PACKAGE_SPECS[id]
+  if (!spec) throw new Error('no automatic installer for ' + id)
+  jobDetail(job, 'installing ' + spec.label)
+  const managed = async (command, argv) => {
+    jobLog(job, command + ' ' + argv.join(' '))
+    const result = await run(command, argv, { timeoutMs: 1_800_000, env: envForChild(config) })
+    jobLog(job, [result.stdout, result.stderr].filter(Boolean).join('\n'))
+    if (result.code !== 0) throw new Error(command + ' exited ' + result.code + ': ' + (result.stderr || result.stdout || '').trim().slice(0, 400))
+  }
+  if (IS_WINDOWS) {
+    const winget = which('winget') || which('winget.exe')
+    if (!winget) throw new Error('winget was not found on this machine; ' + manualCommandFor(id))
+    if (id === 'gdb') {
+      await managed(winget, ['install', '-e', '--id', 'MSYS2.MSYS2', '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity'])
+      const bash = 'C:\\msys64\\usr\\bin\\bash.exe'
+      if (!existsFile(bash)) throw new Error('MSYS2 was installed but ' + bash + ' is missing; ' + manualCommandFor(id))
+      await managed(bash, ['-lc', 'pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-gdb'])
+      jobLog(job, 'GDB is under C:\\msys64\\ucrt64\\bin; add that folder to PATH if the CLI still cannot find it')
+      return
+    }
+    await managed(winget, ['install', '-e', '--id', spec.winget, '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity'])
+    invalidateProbes()
     return
   }
-  const pnpmScript = path.join(path.dirname(process.execPath), 'resources', 'runtime', 'pnpm', 'bin', 'pnpm.mjs')
-  if (existsFile(pnpmScript)) {
-    jobLog(job, 'npm is not on PATH; using the pnpm shipped with the Harness')
-    await runNpmInstall(process.execPath, [pnpmScript, 'add', '-g', packageName])
-    jobLog(job, 'If `claude` is still not found, add the pnpm global bin directory to PATH (`pnpm bin -g`).')
-    jobLog(job, 'Sign in once with `claude` before rebuild can use it.')
+  if (process.platform === 'darwin') {
+    const brew = which('brew')
+    if (!brew) throw new Error('Homebrew was not found; ' + manualCommandFor(id))
+    await managed(brew, spec.brew)
+    if (id === 'gdb') jobLog(job, 'macOS also needs the binary to be codesigned before gdb can attach (see the manual command)')
+    invalidateProbes()
     return
   }
-  throw new Error('Neither npm nor the Harness pnpm wrapper was found. Install Node.js/npm first, then retry.')
+  const apt = which('apt-get')
+  if (!apt) throw new Error('apt-get was not found; ' + manualCommandFor(id))
+  const root = typeof process.getuid === 'function' && process.getuid() === 0
+  if (root) await managed(apt, ['install', '-y', spec.apt])
+  else {
+    const sudo = which('sudo')
+    if (!sudo) throw new Error('this needs root (no sudo found); ' + manualCommandFor(id))
+    await managed(sudo, ['-n', 'apt-get', 'install', '-y', spec.apt])
+  }
+  invalidateProbes()
 }
 
 async function installGhidraInto(config, job) {
@@ -1294,13 +1379,14 @@ async function installGhidraInto(config, job) {
   jobLog(job, 'Ghidra installed: ' + engine.found)
 }
 
-const AUTO_INSTALLABLE = new Set(['cli', 'coding-agent', 'ghidra'])
+const AUTO_INSTALLABLE = new Set(['cli', 'coding-agent', 'ghidra', 'chromium', 'java', 'gdb'])
 
 function startEnvJobById(config, id) {
   if (!AUTO_INSTALLABLE.has(id)) return null
   if (id === 'cli') return startEnvJob(config, 'cli', (job) => installCliInto(config, job, { version: 'latest' }))
   if (id === 'coding-agent') return startEnvJob(config, 'coding-agent', (job) => installCodingAgentInto(config, job))
-  return startEnvJob(config, 'ghidra', (job) => installGhidraInto(config, job))
+  if (id === 'ghidra') return startEnvJob(config, 'ghidra', (job) => installGhidraInto(config, job))
+  return startEnvJob(config, id, (job) => installPackageInto(config, job, id))
 }
 
 ﻿async function envReport(config = {}) {
@@ -1337,7 +1423,7 @@ function startEnvJobById(config, id) {
     {
       id: 'chromium',
       group: 'core',
-      auto: false,
+      auto: true,
       label: { en: 'Chromium based browser', zh: 'Chromium 内核浏览器' },
       hint: { en: 'Used by the browser recording and inspection tools.', zh: '浏览器录制/检查工具需要它。' },
       state: chromiumFound ? 'ok' : 'missing',
@@ -1368,7 +1454,7 @@ function startEnvJobById(config, id) {
     {
       id: 'java',
       group: 'deep',
-      auto: false,
+      auto: true,
       label: { en: 'Java 21+', zh: 'Java 21+' },
       hint: { en: 'Runtime required by Ghidra.', zh: 'Ghidra 需要的运行时。' },
       state: javaFound ? 'ok' : 'missing',
@@ -1378,7 +1464,7 @@ function startEnvJobById(config, id) {
     {
       id: 'gdb',
       group: 'deep',
-      auto: false,
+      auto: true,
       label: { en: 'GDB', zh: 'GDB' },
       hint: { en: 'Debugger used by some native analysis tools.', zh: '部分原生分析工具用到的调试器。' },
       state: gdbFound ? 'ok' : 'missing',

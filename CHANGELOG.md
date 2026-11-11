@@ -1,5 +1,34 @@
 # 更新日志
 
+## [v0.6.0] - 2026-11-11
+
+修复别人机器上一键安装依赖整片失败的问题，并按需求把下载改成"最快镜像优先、官方源兜底"，把原来只能复制命令的依赖也变成点一下就装。
+
+### 修复
+
+- **Windows 一键安装 CLI 报 `Invoke-WebRequest : InvalidOperation`（截图问题）**：`install-cli.ps1` 只用 `Invoke-WebRequest` 下载，在 TLS/代理/受限网络下直接抛错；现在优先用系统 `curl.exe`（`--retry`、超时、`--ssl-no-revoke`），没有 curl 才回退 IWR 并显式打开 TLS 1.2；错误信息不再因为 PowerShell 用 ANSI 代码页输出而变成乱码（Host 用 UTF-8 控制台包装执行，脚本自己设置 `[Console]::OutputEncoding`）。
+- **最新版本解析有备用路径**：`api.github.com` 不通时改为读 `github.com/.../releases/latest` 的 302 Location（curl），两者都不通才提示用 `-Version vX.Y.Z`。
+- **「Neither npm nor the Harness pnpm wrapper was found」**：pnpm 探测不再只看 `dirname(process.execPath)`，而是从 `process.resourcesPath`、`process.argv[1]` 里的 `resources/app.asar/...` 反推 Harness 安装目录；Windows 上两者都缺时先用 `winget install OpenJS.NodeJS.LTS` 装 Node，再用新装 npm 装 Claude Code；npm 安装走镜像/官方两个 registry 逐个重试。
+- **Ghidra 的连锁失败**：CLI 装好后 Ghidra 的一键安装才有意义，本次随 CLI/npm 修复一起消失；Ghidra 仍优先复用本机安装。
+
+### 新增
+
+- **镜像源优先 + 官方兜底（GitHub 下载）**：新增 `scripts/mirrors.mjs`；默认候选 ghfast.top / gh-proxy.com / ghproxy.net / mirror.ghproxy.com，先对 `SHA256SUMS.txt` 发 range 请求测延迟，按最快排序、官方 github.com 永远排最后；每个候选下载后都要过 SHA256SUMS 校验，校验失败或下载不完整就换下一个源，全部失败才报错并列出每个源的失败原因。可用 `CRAFT_ANYTHING_GITHUB_MIRRORS` 覆盖候选（逗号分隔）。
+- **npm registry 镜像**：`registry.npmmirror.com` 与官方 `registry.npmjs.org` 先测 `/-/ping` 延迟，快的先装、失败换下一个（可用 `CRAFT_ANYTHING_NPM_REGISTRY` 覆盖）。
+- **复制命令 → 一键安装**：Chromium、Java、GDB 从"只能复制命令"改成 `auto: true`，Windows 走 winget（Chromium/Chrome、Temurin 21、MSYS2 里的 mingw gdb），macOS 走 brew，Linux 走 apt（必要时 sudo -n）；安装失败时页面上会同时出现「复制命令」按钮，不会变成死路。
+
+### 验证
+
+- `tests/install-cli/run.cjs` **12/12**（镜像改造后仍全绿，含 sha 不匹配、资产缺失、无 CLI、`CRAFT_ANYTHING_CLI` 短路、元数据失败回退）。
+- 真实 v0.6.0 资产 dry-run：镜像测速后按顺序给出下载源，官方源兜底；所有候选都失败时会打印每个源的失败原因（本机实验：镜像不可达 → 直接落到 github.com）。
+- `node --check`：host/index.js、client.js、scripts/install-cli.mjs、scripts/mirrors.mjs、restart-dsh.mjs、mcp-bridge.cjs 全部通过；PowerShell 脚本用 AST 解析 0 语法错误。
+
+### 已知限制
+
+- Ghidra 本体由上游 CLI 自己下载（`engines_install`），镜像只覆盖本插件自己的下载；上游 CLI 的下载源无法从插件侧替换。
+- winget/brew/apt 属于系统包管理器，速度取决于它们的源，插件不代理；失败时仍给出复制命令。
+- 镜像只是传输层：内容永远以 SHA256SUMS 为准，镜像无法替换成别的二进制。
+
 ## [v0.5.1] - 2026-11-11
 
 v0.5.0 的更新/重启链路在两处边界上修正：多实例（独立 `DSH_HOME`）里的更新只动自己那个 profile；从命令行启动的 DSH 重启后仍然是同一条 CLI 服务，而不是弹出一个桌面窗口。

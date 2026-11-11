@@ -142,7 +142,7 @@ window.__ModuleLoader__.load({
         bridgeSwitching: 'Switching mode: waiting for an in-flight call to finish (up to 20 s), then the tool list refreshes automatically.',
         bridgeChip: 'Bridge',
         envTitle: 'Environment & dependencies',
-        envHint: 'Checks the local environment for this machine and installs what is missing. Checks and install commands follow the operating system.',
+        envHint: 'Checks the local environment for this machine and installs what is missing. Downloads probe the fastest reachable mirror first and fall back to the official source; checks and install commands follow the operating system.',
         envAllOk: 'Everything this plugin needs is present.',
         envFixAll: 'Install all fixable',
         envGroupCore: 'Core',
@@ -240,7 +240,7 @@ window.__ModuleLoader__.load({
         bridgeSwitching: '正在切换模式：等待在途调用结束（最多 20 秒），完成后工具列表自动刷新。',
         bridgeChip: '桥',
         envTitle: '环境与依赖',
-        envHint: '自动检查本机环境，缺什么就一键装什么；检查项与安装命令按操作系统区分。',
+        envHint: '自动检查本机环境，缺什么就一键装什么。下载会先测速选最快的镜像源，失败自动回退官方源；检查项与安装命令按操作系统区分。',
         envAllOk: '本插件需要的环境都已就绪。',
         envFixAll: '一键补齐可自动项',
         envGroupCore: '核心',
@@ -931,12 +931,17 @@ window.__ModuleLoader__.load({
             okNow
               ? null
               : dep.auto
-                ? h('button', {
-                  className: 'dsh-ca-btn dsh-ca-btn-primary',
-                  type: 'button',
-                  disabled: running || busyId !== null,
-                  onClick: () => install(dep),
-                }, running ? s.envInstalling : (dep.state === 'ok' ? s.envUpdate : s.envInstall))
+                ? h(React.Fragment, null,
+                  h('button', {
+                    className: 'dsh-ca-btn dsh-ca-btn-primary',
+                    type: 'button',
+                    disabled: running || busyId !== null,
+                    onClick: () => install(dep),
+                  }, running ? s.envInstalling : (dep.state === 'ok' ? s.envUpdate : s.envInstall)),
+                  failed && dep.command
+                    ? h('button', { className: 'dsh-ca-btn', type: 'button', onClick: () => copy(dep), disabled: !dep.command },
+                      copied === dep.id ? s.envCopied : s.envCopy)
+                    : null)
                 : h('button', { className: 'dsh-ca-btn', type: 'button', onClick: () => copy(dep), disabled: !dep.command },
                   copied === dep.id ? s.envCopied : s.envCopy)))
       }
