@@ -7,11 +7,15 @@
 #   2. craft-anything-mcp  — the shipped @deepseek-ai/dsh-mcp-client, launched on the local
 #      craft-anything-cli, so its MCP tools register as mcp__craft__<tool>.
 #
-# Mode switching (clean room <-> deep) is not a per-call CLI flag in this bridge: the MCP server
-# reads its mode once at startup. The launcher holds the mode in <root>/mode.json, starts the
-# server with an explicit --clean-room / --deep, and watches that file: when craft_mode (or the
-# composer chip) changes it, the launcher stops the server, dsh-mcp-client reconnects, and the
-# tool list re-syncs in the new mode.
+# Mode switching (clean room <-> deep) is not a per-call CLI flag: the MCP server reads its mode
+# once at startup. The launcher holds the mode in <root>/mode.json and starts the server with an
+# explicit --clean-room / --deep; scripts/mcp-bridge.cjs watches that file and, since v0.5.0,
+# keeps its own process (and therefore the DSH MCP session) alive: it drains the calls that are
+# still in flight, queues the ones that arrive during the switch, swaps only the CLI child, runs
+# the child's initialize/tools-list handshake itself, replays the queued calls with their original
+# ids, then emits notifications/tools/list_changed. DSH never sees a disconnect, so a mode change
+# no longer fails an in-flight tool call. (The legacy pass-through fallback below still exits and
+# lets dsh-mcp-client reconnect; it only runs if the bridge module cannot be loaded.)
 #
 # Cross-platform runtime: `command` is the DSH desktop executable itself with
 # ELECTRON_RUN_AS_NODE=1, so the bridge runs on the exact Node build DSH ships. A Finder-launched
@@ -27,7 +31,8 @@
 #     exits 0 after 2.5 s no matter what. Without that, stop() waited for a child that never
 #     exits: dsh-mcp-client's unload/reconnect then waits too, and DSH looks frozen.
 #     (Windows kill('SIGTERM') is TerminateProcess, which is why this never reproduced there.)
-#   - the mode-file watcher and the signal handlers share the same idempotent stop().
+#   - the mode-file watcher and the signal handlers share the same idempotent stop(); in the
+#     bridge the mode watcher swaps the child instead of stopping the process.
 #   - the mode flags are only passed to CLIs that know them (>= 0.4.0). The probe result is
 #     cached in mcp.state.json keyed by the CLI path + mtime, so a reconnect does not spawn
 #     `--version` again; the probe timeout is 4 s, not 15 s.
@@ -36,9 +41,12 @@
 #   - CRAFT_ANYTHING_MCP_ARGS adds CLI flags for the MCP server, e.g. `--all-tools` (107 tools;
 #     with deep mode 321, but that is ~346 KB of tool schemas on every request — weigh it).
 #     Do not put --deep/--clean-room there: the mode file owns those.
-#   - scripts/mcp-bridge.cjs proxies the stdio server and filters tools/list from <root>/bridge.json
-#     ({"enabled":true,"allow":["core_*"]}): toggling it emits notifications/tools/list_changed so
-#     dsh-mcp-client re-registers tools without restarting the CLI, the bridge or the Harness.
+#   - scripts/mcp-bridge.cjs proxies the stdio server, filters tools/list from <root>/bridge.json
+#     ({"enabled":true,"allow":["core_*"]}) and owns the CLI lifetime: toggling the allowlist emits
+#     notifications/tools/list_changed without restarting anything, a mode change swaps the CLI
+#     child in place (CRAFT_ANYTHING_DRAIN_MS, default 20000, bounds how long it waits for in-flight
+#     calls before replaying them on the new child), and touching <root>/mcp.restart restarts the
+#     child after a CLI reinstall. State goes to <root>/mcp.state.json.
 #   - toolCallTimeoutMs is raised because archive/investigation tools can outlive 60 s.
 #   - reconnect is capped so a broken CLI fails fast instead of retrying for minutes.
 #   - failOnStartupError stays false: without the CLI the Harness still boots and the tools

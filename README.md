@@ -99,7 +99,7 @@ mcp__craft__core_report_write  { "format": "markdown" }
 - 或 `craft_mode { "mode": "deep" }`（不带参数只读取当前模式）；
 - 或单次命令加 `--deep`：`craft_cli { "args": ["rebuild", "<目标>", "<想要什么>", "--deep"] }`。
 
-切换是**全局**的（对整个 DSH 的 MCP 连接生效），并会重启 MCP 服务，因此进行中的 MCP 调用会失败，工具列表 1–2 秒后刷新。
+切换是**全局**的（对整个 DSH 的 MCP 连接生效）。v0.5.0 起切换在桥进程内部完成：先等正在执行的调用结束（最多 20 秒，`CRAFT_ANYTHING_DRAIN_MS` 可调），期间到达的调用排队，然后只替换 CLI 子进程并自动刷新工具列表——**DSH 不重连、在途调用不再失败**。
 
 ### 3) 让编码智能体重建
 
@@ -131,7 +131,7 @@ craft_cli { "args": ["doctor"] }
     # 其它 CLI 参数：CRAFT_ANYTHING_MCP_ARGS（例如 --all-tools；321 个工具的 schema ≈346 KB）
 ```
 
-- CLI 发现顺序：`CRAFT_ANYTHING_CLI` → `<root>\bin\craft-anything-cli.exe` → `<root>\<版本>\craft-anything-cli.exe`。
+- CLI 发现顺序：`config.cliPath` → `CRAFT_ANYTHING_CLI`（环境变量或 `<root>\env.json`，页面「CLI 路径」保存的就是它）→ `<root>\bin\craft-anything-cli.exe` → `<root>\<版本>\craft-anything-cli.exe` → PATH。
 - 模式文件：`<root>\mode.json`（`{"mode":"clean"}` / `{"mode":"deep"}`）；运行状态：`<root>\mcp.state.json`。
 - 本机实测路径：`C:\Users\<你>\.dsh\plugins-data\craft-anything\v0.4.0\craft-anything-cli.exe`（portable 模式，设置在同目录 `CraftAnythingData\config.toml`）。
 
@@ -143,12 +143,17 @@ craft_cli { "args": ["doctor"] }
 dsh-craft-anything/
 ├─ package.json           # bundle 清单：dsh.bundle.patch + dsh.client（Web 半边）
 ├─ cordis.patch.yml       # 两行：Host 插件 + dsh-mcp-client（内嵌 Node 启动器）
-├─ host/index.js          # craft_status / craft_cli / craft_install / craft_mode + HTTP 路由
-├─ client.js              # 左侧栏图标 + 状态页 + 对话框左下角模式开关（纯 ESM，无需构建）
+├─ host/index.js          # craft_status / craft_cli / craft_install / craft_mode / craft_bridge + HTTP 路由
+├─ host/update.mjs        # 检查更新 / 一键更新 / 重启 DSH（v0.5.0）
+├─ client.js              # 左侧栏图标 + 状态页 + 环境/更新卡 + 对话框左下角模式与桥开关（纯 ESM，无需构建）
 ├─ locale/{en,zh}.json    # 插件显示名与描述
 ├─ icon.svg               # 原创图标
 ├─ dsh.plugin.json        # 插件市场可读的元数据
-└─ scripts/install-cli.ps1# 下载/校验/解压官方 CLI
+└─ scripts/
+   ├─ install-cli.ps1     # Windows：下载/校验/解压官方 CLI
+   ├─ install-cli.mjs     # macOS/Linux：从 release 元数据解析资产、SHA256SUMS、解包安装
+   ├─ mcp-bridge.cjs      # MCP stdio 代理：工具白名单 + 模式热切换（v0.5.0 起进程常驻）
+   └─ restart-dsh.mjs     # 分离式重启 helper
 ```
 
 Host 半边只做三件事：读本地状态、跑本地 CLI、走 DSH 自带的 MCP 客户端；唯一联网行为是 `craft_install` 下载官方 release。
@@ -163,7 +168,7 @@ Host 半边只做三件事：读本地状态、跑本地 CLI、走 DSH 自带的
 | DSH 0.2.2-rc1+ | 只用稳定 API，无私有字段依赖；未在 0.2.2-rc1 上真机跑过（该版本未在本机安装）。如果官方改了槽位或注册签名，插件会按 [RELEASING.md](RELEASING.md) 发新版本跟进 |
 | Windows | 完整验证（CLI 安装、MCP、模式切换、状态页、发布脚本） |
 | macOS | 启动器与安装器已按 macOS 适配（Electron-as-Node、universal CLI zip、SIGKILL 兜底）；**本机无 Mac，未做真机验证**——见下方「macOS 卡死」修复说明 |
-| Linux | 安装器按 release tarball best effort；其余逻辑跨平台。未真机验证 |
+| Linux | 安装器已重写：从 release 元数据解析 `craft-anything-<ver>-linux-{x86_64,aarch64,riscv64}.tar.gz`（SHA256SUMS 强校验、嵌套 `usr/bin` 目录可识别），用 `--platform linux` 在 Windows 上跑通解包/校验/失败路径（12 项）；**真实 Linux 二进制未在本机执行**，首次安装后请核对 `--version` |
 
 ### 性能
 
@@ -181,7 +186,21 @@ Host 半边只做三件事：读本地状态、跑本地 CLI、走 DSH 自带的
 - **Claude Code**：走 `npm install -g @anthropic-ai/claude-code`（Windows 用 npm 的 JS 入口，避免 `npm.CMD` 的 EINVAL）；装完还要执行一次 `claude` 登录或用 API Key，`rebuild` 才能用。
 - 手动项（Java/GDB/Chromium）给出当前系统对应的命令（winget / brew / apt），点「复制命令」粘贴执行即可。
 
-## MCP 桥按需开关与工具白名单（issue #1）
+## 检查更新与一键更新（v0.5.0）
+
+「环境与依赖」卡右上角、「一键补齐可自动项」右边新增「检查更新 / Check for updates」按钮：
+
+- 点一下 → 读 GitHub 最新 Release 并与当前加载版本比较，显示当前版本（如 `v0.4.0`），有新版本时标注「有新版本 v0.5.0」；
+- 弹窗列出「当前 → 最新」和 Release 说明；确认后由 Host 调 DSH 自带的包管理器，在该插件所在的 profile 里执行
+  `dsh plugin --profile <profile> add github:Fanqi89/dsh-craft-anything#v<tag> --config.minimumReleaseAge=0`
+  （固定到发布标签，不会跟 `main` 漂移；`link:` 本地开发副本会提示“更新会把 profile 指到发布标签”）；
+- 安装完成后再弹「是否重启 DSH」：点「立即重启」由分离的 helper 结束主进程并重新拉起（Windows TerminateProcess / macOS `open -n` / Linux 原可执行文件），新版本生效；过程写到 `<root>/restart.log`；
+- 无网、GitHub 限流、profile 找不到都只在弹窗里报错，**不会改动已安装版本**。
+
+对应路由：`GET/POST /craft-anything/api/update`（GET 报告；POST `{"action":"check"|"install"}`）与 `POST /craft-anything/api/restart`，与其它管理路由同一套鉴权。
+
+**CLI 路径覆盖**：环境卡底部新增「CLI 路径」输入框，保存后写入 `<root>/env.json` 的 `CRAFT_ANYTHING_CLI`；Host 的 CLI 发现、`scripts/install-cli.mjs`、MCP 启动器三处统一生效（旧版 Linux 上“手动下载二进制再指过去”的那一步，现在不用敲命令）。`--force` 安装会忽略该覆盖、装一份受管副本。
+## MCP 桥按需开关与工具白名单（issue #1；v0.5.0 起支持模式热切换）
 
 DSH 的 mcp-client 会把 stdio 服务器列出的每个工具都注册进上下文，所以默认 Essentials（30 个）或 `--all-tools`/深度（107/321 个）的 schema 会一直占 token。v0.4.0 增加了一个 MCP 代理（`scripts/mcp-bridge.cjs`）：
 
@@ -189,15 +208,15 @@ DSH 的 mcp-client 会把 stdio 服务器列出的每个工具都注册进上下
 - 页面「MCP 桥」卡里可以「关」桥、输入白名单（只支持 `*` 通配符）、或用预设（全部 / 仅核心 / 仅调查流程）；对话框左下角也有「桥 开/关」chip；
 - 也可以用工具：`craft_bridge {"enabled": false}` 或 `craft_bridge {"allow": ["core_investigation_*","core_evidence_*"]}`；
 - 状态存在 `<root>/bridge.json`（`{"enabled":true,"allow":[]}`），代理监听它并向 DSH 发 `notifications/tools/list_changed`，约 1 秒内上下文里的工具就增减完毕，**不需要重启 CLI、桥或 DSH**；
-- 干净/深度模式切换仍会重启 CLI（上游模式在启动时固定），重启后自动沿用 `bridge.json`。
+- 干净/深度模式切换由桥内部换 CLI 子进程（上游模式在启动时固定，但 DSH 会话不必断）：在途调用先跑完、期间新调用排队、随后同 id 重放并自动刷新工具列表；`CRAFT_ANYTHING_DRAIN_MS`（默认 20000）是等待上限。写入 `<root>/mcp.restart`（重装 CLI 后）也会触发同模式子进程重启。
 
-实测（0.2.1-rc.5 / craft-anything 0.5.0）：30 个工具 → 白名单后 5 个 → 关闭后 0 个（调用被拒）→ 重开 30 个，全程同一个 CLI pid。
+实测（0.2.1-rc.5 / craft-anything 0.5.0）：30 个工具 → 白名单后 5 个 → 关闭后 0 个（调用被拒）→ 重开 30 个，全程同一个 CLI pid；模式热切换 clean 30 → deep 38 → clean 30，每次 225/228 ms，桥 pid 不变。
 
 > 白名单只裁剪 DSH 上下文里的 tool schema，不改变 CLI 内部工具集；要更多工具仍用 `mcp__craft__list_toolsets` / `enable_toolset`，或用白名单只挑常用组。
 
 ## 安全：管理接口鉴权
 
-三条管理路由（`GET/POST /craft-anything/api/mode`、`GET /craft-anything/api/status`、`GET/POST /craft-anything/api/env`）
+五条管理路由（`/craft-anything/api/status`、`/mode`、`/env`、`/bridge`、`/update`，以及 `POST /craft-anything/api/restart`）
 统一下了四层准入；未通过直接 401/403 且**不执行任何副作用**（不会跑 CLI、不会装依赖）：
 
 1. **Host 头白名单**：只接受 `127.0.0.1` / `localhost`（含 `::1`）；Host 不是本机 → 403（防 DNS rebinding）。
@@ -231,10 +250,13 @@ Web UI 若确实要对外网/非回环地址提供服务，需显式放开（默
 - `CRAFT_ANYTHING_CLI` 指向旧路径时会遮蔽已安装的 CLI：现在回退扫描安装目录。
 - 状态页/工具每次请求起两个 CLI 子进程：改为带 TTL 的缓存，`refresh`/`?full=1` 强制刷新。
 - 插件反复重连看起来像卡住：`reconnect.maxAttempts` 改为 4、最大退避 5 秒，CLI 缺失时快速失败而不是重试几分钟。
+- **Linux 上一键安装 CLI 报「installer script is missing」（v0.5.0）**：v0.1.x 的 `package.json#files` 根本没打包 `scripts/install-cli.mjs`；现在随包发布并从 release 元数据解析资产名、递归查找 `craft-anything-cli`、SHA256SUMS 强校验，失败信息直接给出可复制的回退命令。
+- **页面读不到自定义 CLI**：`CRAFT_ANYTHING_CLI` 现在同时接受环境变量与 `<root>/env.json`（页面「CLI 路径」写入的就是后者）。
 
 **仍存在的限制**
-- **模式切换 = 重启 MCP 服务**：上游 MCP 服务在启动时确定净室/深度，切换瞬间的在途调用会失败。
-- **工具集默认只列 Essentials**：`--all-tools`（107 个）或深度 + 全量（321 个）的 schema 会显著增加每次请求的 token，按需开启。
+- **模式切换仍要换 CLI 子进程**：上游在启动时确定净室/深度，旧子进程必须退出；桥先等 20 秒让在途调用收尾，超时未完成的调用会**在新子进程上以同一 id 重放**（read-only 工具，理论上可能重复执行一次，换来的是不再报错）。
+- **工具集默认只列 Essentials**：`--all-tools`（107 个）或深度 + 全量（321 个）的 schema 会显著增加每次请求的 token（桥卡显示 visible/total 与估算 token，>60 个时提示用「仅核心 / 仅调查流程」收窄）。
+- **一键更新需要 GitHub 可达**（走系统代理环境变量或 `env.json`）：完全离线时只能手动 `dsh plugin --profile <p> add github:...#v<tag>`；重启会换端口，当前页面需重新打开。
 - **`rebuild` 需要编码智能体**：本机未检测到 Claude Code / API Key 时，研究与证据类工具照常可用，`rebuild` 会明确失败（`craft-anything-cli doctor` 会说明缺什么）。
 - **研究目标要合法**：只对你拥有或被允许检查的软件使用；上游不绕过 DRM、登录或反作弊。
 - 插件市场检测依赖仓库里的 `dsh.plugin.json`、`package.json` 的 `dsh.bundle` / `keywords`（`dsh-plugin`、`deepseek-harness`）与 README；本仓库不发布到 npm。

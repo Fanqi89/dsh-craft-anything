@@ -20,6 +20,8 @@ window.__ModuleLoader__.load({
     const MODE_ROUTE = '/craft-anything/api/mode'
     const ENV_ROUTE = '/craft-anything/api/env'
     const BRIDGE_ROUTE = '/craft-anything/api/bridge'
+    const UPDATE_ROUTE = '/craft-anything/api/update'
+    const RESTART_ROUTE = '/craft-anything/api/restart'
     const TOKEN_ROUTE = '/craft-anything/api/token'
 
     // Every management route requires Authorization: Bearer <token>. The token is minted by the
@@ -118,8 +120,8 @@ window.__ModuleLoader__.load({
         server: 'Server',
         toolPrefix: 'Tool prefix',
         mode: 'Mode',
-        switching: 'switching; the tool list re-syncs when the service restarts…',
-        mcpNote: 'The bridge lists the Essentials toolset (about 30 tools; deep mode adds 8 inspection tools). Enable more groups for this Harness process with mcp__craft__list_toolsets and mcp__craft__enable_toolset — native, web, Android, .NET, Apple, Electron and more.',
+        switching: 'switching: waiting for in-flight calls, then the tool list refreshes automatically…',
+        mcpNote: 'The bridge lists the Essentials toolset (about 30 tools; deep mode adds 8 inspection tools). Enable more groups with mcp__craft__list_toolsets / mcp__craft__enable_toolset, then keep only the useful ones with the allowlist so the context stays small.',
         workflow: 'Workflow commands',
         workflowHint: 'Run these through the craft_cli tool (or the CLI itself).',
         cleanHint: 'Clean room is the default: nothing inside the target is read. Deep mode reads code, files and page source — switch it from the mode menu here, in the composer row, or with the craft_mode tool.',
@@ -136,7 +138,8 @@ window.__ModuleLoader__.load({
         bridgePresetAll: 'All tools',
         bridgePresetCore: 'Core only',
         bridgePresetInvestigation: 'Investigation',
-        bridgeNote: 'Turning the bridge off, or trimming the allowlist, removes the mcp__craft__* tools from the context without restarting the Harness (the CLI keeps running; a clean/deep mode switch still restarts it).',
+        bridgeNote: 'Turning the bridge off, or trimming the allowlist, removes the mcp__craft__* tools from the context without restarting the Harness. A clean/deep switch now swaps the CLI child inside the bridge: in-flight calls finish first (up to 20 s), the tool list refreshes itself, and DSH never reconnects.',
+        bridgeSwitching: 'Switching mode: waiting for an in-flight call to finish (up to 20 s), then the tool list refreshes automatically.',
         bridgeChip: 'Bridge',
         envTitle: 'Environment & dependencies',
         envHint: 'Checks the local environment for this machine and installs what is missing. Checks and install commands follow the operating system.',
@@ -158,6 +161,34 @@ window.__ModuleLoader__.load({
         envChecking: 'Checking the environment…',
         envReload: 'Checking…',
         envRestartNote: 'Some installs only take effect after the plugin reloads.',
+        pluginLabel: 'Plugin',
+        updateCheck: 'Check for updates',
+        updateChecking: 'Checking…',
+        updateAvailable: 'v{version} available',
+        updateCurrent: 'current',
+        updateDialogTitle: 'Plugin update',
+        updateDialogText: 'A newer version of this plugin is available. It installs from the published release tag and only loads after the Harness restarts.',
+        updateNotes: 'Release notes',
+        updateNow: 'Update now',
+        updateLater: 'Later',
+        updateInstalling: 'Installing the new version…',
+        updateInstallNote: 'The Harness package manager is running in the profile that owns this plugin. This can take a minute.',
+        updateRestartTitle: 'Restart DeepSeek Harness?',
+        updateRestartText: 'The new version only loads after the Harness restarts. This page reconnects when it is back (the port may change).',
+        updateRestartNow: 'Restart now',
+        updateRestartLater: 'Later',
+        updateRestarting: 'Restarting the Harness…',
+        updateFailed: 'Update failed:',
+        updateNoProfile: 'This copy is not managed by a Harness profile, so it cannot update itself.',
+        updateDevCopy: 'This is a local dev copy (link:). Updating points the Harness profile at the published tag instead of this working tree.',
+        cliOverride: 'CLI path',
+        cliOverrideHint: 'Already have craft-anything-cli somewhere else (or the one-click install cannot run on this OS)? Point the plugin at it; saved as CRAFT_ANYTHING_CLI in env.json.',
+        cliOverrideSave: 'Save path',
+        cliOverrideClear: 'Clear',
+        cliOverrideSaved: 'Saved; the CLI checks were refreshed.',
+        cliOverridePlaceholder: 'C:\\tools\\craft-anything-cli.exe',
+        bridgeTokenEstimate: '≈{tokens} tokens',
+        bridgeTrimHint: 'This many tool schemas sit in every request. "Core only" or "Investigation" keeps what most sessions need and cuts the context cost.',
         langLabel: 'Language',
       },
       zh: {
@@ -187,8 +218,8 @@ window.__ModuleLoader__.load({
         server: '服务名',
         toolPrefix: '工具前缀',
         mode: '模式',
-        switching: '切换中，服务重启后工具列表会刷新…',
-        mcpNote: '桥默认只列 Essentials 工具集（约 30 个工具；深度模式多 8 个检查工具）。需要更多工具集时，用 mcp__craft__list_toolsets 与 mcp__craft__enable_toolset 在本进程内动态加载：native、web、Android、.NET、Apple、Electron 等。',
+        switching: '正在切换：等待正在执行的调用结束，完成后工具列表自动刷新…',
+        mcpNote: '桥默认只列 Essentials 工具集（约 30 个工具；深度模式多 8 个检查工具）。需要更多工具集时用 mcp__craft__list_toolsets / mcp__craft__enable_toolset 动态加载，再用白名单只留下常用的，上下文才不会变大。',
         workflow: '工作流命令',
         workflowHint: '通过 craft_cli 工具（或直接调 CLI）运行。',
         cleanHint: '默认是净室模式：不读取目标内部；深度模式会读取代码、文件与页面源码。可在这里的模式菜单、对话框左下角开关或 craft_mode 工具切换。',
@@ -205,7 +236,8 @@ window.__ModuleLoader__.load({
         bridgePresetAll: '全部工具',
         bridgePresetCore: '仅核心',
         bridgePresetInvestigation: '仅调查流程',
-        bridgeNote: '关闭桥或收紧白名单会把 mcp__craft__* 工具从上下文里移除，不需要重启 DSH（CLI 进程保持运行；干净/深度模式切换仍会重启 CLI）。',
+        bridgeNote: '关闭桥或收紧白名单会把 mcp__craft__* 工具从上下文里移除，不需要重启 DSH。干净/深度切换现在由桥内部换 CLI 子进程：在途调用先跑完（最多 20 秒），工具列表自动刷新，DSH 不再重连。',
+        bridgeSwitching: '正在切换模式：等待在途调用结束（最多 20 秒），完成后工具列表自动刷新。',
         bridgeChip: '桥',
         envTitle: '环境与依赖',
         envHint: '自动检查本机环境，缺什么就一键装什么；检查项与安装命令按操作系统区分。',
@@ -227,6 +259,34 @@ window.__ModuleLoader__.load({
         envChecking: '正在检查环境…',
         envReload: '检查中…',
         envRestartNote: '部分安装需要插件重载后才生效。',
+        pluginLabel: '插件',
+        updateCheck: '检查更新',
+        updateChecking: '检查中…',
+        updateAvailable: '有新版本 v{version}',
+        updateCurrent: '当前',
+        updateDialogTitle: '插件更新',
+        updateDialogText: '发现这个插件的新版本。将从已发布的标签安装，并在 DSH 重启后才生效。',
+        updateNotes: '更新说明',
+        updateNow: '立即更新',
+        updateLater: '稍后',
+        updateInstalling: '正在安装新版本…',
+        updateInstallNote: '正在该插件所在的 profile 里运行 DSH 自带的包管理器，可能需要一分钟。',
+        updateRestartTitle: '重启 DeepSeek Harness？',
+        updateRestartText: '新版本需要重启 DSH 才会加载。重启后本页会重新连上（端口可能变化）。',
+        updateRestartNow: '立即重启',
+        updateRestartLater: '稍后',
+        updateRestarting: '正在重启 DSH…',
+        updateFailed: '更新失败：',
+        updateNoProfile: '当前这份不是由 DSH profile 管理的安装，无法自更新。',
+        updateDevCopy: '当前是本地开发副本（link:）。更新会把 DSH profile 指到已发布的标签，而不是这个工作目录。',
+        cliOverride: 'CLI 路径',
+        cliOverrideHint: '已经把 craft-anything-cli 放在别处（或当前系统上一键安装跑不起来）？把路径填这里，会写入 env.json 的 CRAFT_ANYTHING_CLI。',
+        cliOverrideSave: '保存路径',
+        cliOverrideClear: '清除',
+        cliOverrideSaved: '已保存，CLI 检查已刷新。',
+        cliOverridePlaceholder: 'C:\\tools\\craft-anything-cli.exe',
+        bridgeTokenEstimate: '约 {tokens} token',
+        bridgeTrimHint: '这么多工具描述会抬高每一轮的上下文开销。点「仅核心」或「仅调查流程」保留大多数会话真正要用的工具。',
         langLabel: '语言',
       },
     }
@@ -331,6 +391,14 @@ window.__ModuleLoader__.load({
       '.dsh-ca-menu-text{flex:1;min-width:0;}',
       '.dsh-ca-menu-sub{display:block;font-size:11px;line-height:1.4;color:var(--dsw-alias-label-secondary);}',
       '.dsh-ca-menu-check{flex:none;color:var(--dsw-alias-brand-primary);}',
+      '.dsh-ca-update{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;}',
+      '.dsh-ca-modal-mask{position:fixed;inset:0;z-index:2147483001;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;padding:24px;}',
+      '.dsh-ca-modal{width:min(580px,100%);max-height:min(82vh,760px);overflow:auto;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);border-radius:14px;padding:18px 20px;box-shadow:0 18px 60px rgba(0,0,0,.42);}',
+      '.dsh-ca-modal h3{margin:0 0 8px;font-size:15px;line-height:1.4;}',
+      '.dsh-ca-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;flex-wrap:wrap;}',
+      '.dsh-ca-modal-log{margin:10px 0 0;padding:8px 10px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-all;max-height:180px;overflow:auto;}',
+      '.dsh-ca-cli{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l1);}',
+      '.dsh-ca-cli input{flex:1 1 260px;min-width:180px;padding:4px 8px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:inherit;font-size:12px;}',
     ].join('')
 
     function Row(props) {
@@ -631,6 +699,150 @@ window.__ModuleLoader__.load({
       return s.envMissing
     }
 
+    // --- plugin update + Harness restart ----------------------------------------------------
+    // The Host asks GitHub for the newest release of this plugin, runs the Harness' own package
+    // manager on the profile that depends on it, and restarts the Harness through a detached
+    // helper. This page only drives the dialog; every side effect happens in the Host half.
+
+    function useUpdate() {
+      const [state, setState] = React.useState({ phase: 'loading', data: null, error: null })
+      const refresh = React.useCallback((force) => apiFetch(force === true ? UPDATE_ROUTE + '?full=1' : UPDATE_ROUTE)
+        .then((response) => (response.ok ? response.json() : Promise.reject(new Error('update route answered HTTP ' + response.status))))
+        .then((body) => { setState({ phase: 'ready', data: body, error: body.error || null }); return body })
+        .catch((error) => {
+          setState((previous) => ({ phase: 'error', data: previous.data, error: String((error && error.message) || error) }))
+          throw error
+        }), [])
+      React.useEffect(() => { refresh(false).catch(() => {}) }, [refresh])
+      const install = React.useCallback(() => apiFetch(UPDATE_ROUTE, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'install' }),
+      }).then((response) => response.json()), [])
+      const restart = React.useCallback(() => apiFetch(RESTART_ROUTE, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      }).then((response) => response.json()), [])
+      return { state, refresh, install, restart }
+    }
+
+    function UpdatePortal(props) {
+      const ReactDOM = require('react-dom')
+      if (typeof document === 'undefined' || !document.body) return props.children
+      return ReactDOM.createPortal(props.children, document.body)
+    }
+
+    function UpdateButton(props) {
+      const { update, s } = props
+      const data = update.state.data
+      const [busy, setBusy] = React.useState(false)
+      const [toast, setToast] = React.useState('')
+      const [dialog, setDialog] = React.useState(null)
+      const current = data && data.current ? data.current.version : ''
+      const latest = data && data.latest ? data.latest.version : ''
+      const hasUpdate = Boolean(data && data.hasUpdate)
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+      const flash = (text) => { setToast(text); setTimeout(() => setToast(''), 4500) }
+
+      const check = async () => {
+        if (busy) return
+        setBusy(true)
+        try {
+          const report = await update.refresh(true)
+          if (report && report.hasUpdate) setDialog({ kind: 'confirm', report })
+          else flash(s.updateCheck + ': ' + s.updateCurrent + ' v' + ((report && report.current && report.current.version) || current))
+        } catch (error) {
+          flash(s.updateFailed + ' ' + String((error && error.message) || error))
+        } finally { setBusy(false) }
+      }
+
+      const waitForJob = async () => {
+        for (let attempt = 0; attempt < 900; attempt += 1) {
+          await sleep(1200)
+          let body = null
+          try { body = await update.refresh(false) } catch { continue }
+          const job = body && body.job ? body.job : null
+          if (!job) continue
+          if (job.status !== 'running') return job
+        }
+        return { status: 'error', error: 'the update did not finish in time' }
+      }
+
+      const startInstall = async () => {
+        const report = dialog && dialog.report ? dialog.report : null
+        setDialog({ kind: 'progress', report, job: null })
+        try {
+          const response = await update.install()
+          setDialog({ kind: 'progress', report, job: response && response.job ? response.job : null })
+          const job = await waitForJob()
+          if (job.status === 'done') setDialog({ kind: 'restart', report, job })
+          else setDialog({ kind: 'error', job, error: (job && job.error) || 'unknown error' })
+        } catch (error) {
+          setDialog({ kind: 'error', error: String((error && error.message) || error) })
+        }
+      }
+
+      const doRestart = async () => {
+        setBusy(true)
+        try {
+          const body = await update.restart()
+          if (body && body.ok) setDialog({ kind: 'restarting', note: body.note })
+          else setDialog({ kind: 'error', error: (body && body.error) || 'could not schedule the restart' })
+        } catch (error) {
+          setDialog({ kind: 'error', error: String((error && error.message) || error) })
+        } finally { setBusy(false) }
+      }
+
+      const dialogNode = dialog ? h('div', { className: 'dsh-ca-modal-mask', role: 'presentation' },
+        h('div', { className: 'dsh-ca-modal', role: 'dialog', 'aria-modal': 'true', 'data-dsh-craft-anything': 'update-dialog' },
+          dialog.kind === 'confirm' ? h(React.Fragment, null,
+            h('h3', null, s.updateDialogTitle + ' · ' + (dialog.report && dialog.report.latest ? dialog.report.latest.tag : '')),
+            h('p', { className: 'dsh-ca-note', style: { marginTop: 0 } }, s.updateDialogText),
+            h('p', { className: 'dsh-ca-muted', style: { fontSize: '12px', margin: '0' } },
+              s.updateCurrent + ' v' + ((dialog.report.current && dialog.report.current.version) || '') + ' → v' + ((dialog.report.latest && dialog.report.latest.version) || '')),
+            dialog.report.devCopy ? h('p', { className: 'dsh-ca-warn', style: { fontSize: '12px' } }, s.updateDevCopy) : null,
+            dialog.report.install && dialog.report.install.available ? null : h('p', { className: 'dsh-ca-bad', style: { fontSize: '12px' } }, (dialog.report.install && dialog.report.install.hint) || s.updateNoProfile),
+            dialog.report.latest && dialog.report.latest.notes ? h('div', null,
+              h('p', { className: 'dsh-ca-note', style: { marginBottom: 2 } }, s.updateNotes),
+              h('pre', { className: 'dsh-ca-modal-log' }, String(dialog.report.latest.notes).slice(0, 2000))) : null,
+            h('div', { className: 'dsh-ca-modal-actions' },
+              h('button', { className: 'dsh-ca-btn', type: 'button', onClick: () => setDialog(null) }, s.updateLater),
+              h('button', { className: 'dsh-ca-btn dsh-ca-btn-primary', type: 'button', disabled: !(dialog.report.install && dialog.report.install.available), onClick: startInstall }, s.updateNow))) : null,
+          dialog.kind === 'progress' ? h(React.Fragment, null,
+            h('h3', null, s.updateInstalling),
+            h('p', { className: 'dsh-ca-note', style: { marginTop: 0 } }, s.updateInstallNote),
+            dialog.job && dialog.job.log ? h('pre', { className: 'dsh-ca-modal-log' }, String(dialog.job.log).slice(-2600)) : null) : null,
+          dialog.kind === 'restart' ? h(React.Fragment, null,
+            h('h3', null, s.updateRestartTitle),
+            h('p', { className: 'dsh-ca-note', style: { marginTop: 0 } }, s.updateRestartText),
+            dialog.job && dialog.job.log ? h('pre', { className: 'dsh-ca-modal-log' }, String(dialog.job.log).slice(-1600)) : null,
+            h('div', { className: 'dsh-ca-modal-actions' },
+              h('button', { className: 'dsh-ca-btn', type: 'button', onClick: () => setDialog(null) }, s.updateRestartLater),
+              h('button', { className: 'dsh-ca-btn dsh-ca-btn-primary', type: 'button', disabled: busy, onClick: doRestart }, s.updateRestartNow))) : null,
+          dialog.kind === 'restarting' ? h(React.Fragment, null,
+            h('h3', null, s.updateRestarting),
+            h('p', { className: 'dsh-ca-note', style: { marginTop: 0 } }, (dialog.note || s.updateRestartText))) : null,
+          dialog.kind === 'error' ? h(React.Fragment, null,
+            h('h3', { className: 'dsh-ca-bad' }, s.updateFailed),
+            h('p', { className: 'dsh-ca-note', style: { marginTop: 0 } }, String(dialog.error || '')),
+            dialog.job && dialog.job.log ? h('pre', { className: 'dsh-ca-modal-log' }, String(dialog.job.log).slice(-2200)) : null,
+            h('div', { className: 'dsh-ca-modal-actions' },
+              h('button', { className: 'dsh-ca-btn', type: 'button', onClick: () => setDialog(null) }, s.updateLater))) : null)) : null
+
+      return h('span', { className: 'dsh-ca-update', 'data-dsh-craft-anything': 'update-button' },
+        h('button', {
+          className: 'dsh-ca-btn',
+          type: 'button',
+          title: current ? s.pluginLabel + ' v' + current : s.updateCheck,
+          disabled: busy || update.state.phase === 'loading',
+          onClick: check,
+        }, busy ? s.updateChecking : s.updateCheck),
+        current ? h('span', { className: 'dsh-ca-muted', style: { fontSize: '12px' } }, 'v' + current) : null,
+        hasUpdate && latest ? h('span', { className: 'dsh-ca-warn', style: { fontSize: '12px' } }, s.updateAvailable.replace('{version}', latest)) : null,
+        toast ? h('span', { className: 'dsh-ca-muted', style: { fontSize: '12px' } }, toast) : null,
+        dialogNode ? h(UpdatePortal, null, dialogNode) : null)
+    }
     function EnvCard(props) {
       const { state, load, action } = props.env
       const s = props.s
@@ -639,6 +851,12 @@ window.__ModuleLoader__.load({
       const jobs = (data && Array.isArray(data.jobs) ? data.jobs : []).reduce((map, job) => { map[job.id] = job; return map }, {})
       const [copied, setCopied] = React.useState(null)
       const [busyId, setBusyId] = React.useState(null)
+      const [cliPath, setCliPath] = React.useState('')
+      const [cliDirty, setCliDirty] = React.useState(false)
+      const [cliSaved, setCliSaved] = React.useState(false)
+      React.useEffect(() => {
+        if (!cliDirty && data) setCliPath((data && data.cliOverride) || '')
+      }, [data && data.cliOverride, cliDirty])
 
       const copy = (dep) => {
         const command = dep.command || ''
@@ -662,6 +880,18 @@ window.__ModuleLoader__.load({
         action({ action: 'install', id: dep.id }).finally(() => setBusyId(null))
       }
       const fixAll = () => { setBusyId('*'); action({ action: 'fix-all' }).finally(() => setBusyId(null)) }
+      const saveCli = () => {
+        setBusyId('cli-override')
+        action({ action: 'set-cli', path: cliPath.trim() })
+          .then(() => { setCliDirty(false); setCliSaved(true); setTimeout(() => setCliSaved(false), 2500) })
+          .finally(() => setBusyId(null))
+      }
+      const clearCli = () => {
+        setBusyId('cli-override')
+        action({ action: 'set-cli', path: '' })
+          .then(() => { setCliDirty(false); setCliPath('') })
+          .finally(() => setBusyId(null))
+      }
 
       const deps = data && Array.isArray(data.checks) ? data.checks : []
       const runningNow = Object.keys(jobs).length > 0 && Object.values(jobs).some((job) => job.status === 'running')
@@ -714,10 +944,11 @@ window.__ModuleLoader__.load({
       return h('section', { className: 'dsh-ca-card', 'data-dsh-craft-anything': 'env-card' },
         h('div', { className: 'dsh-ca-card-head' },
           h('h2', null, s.envTitle),
-          h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
+          h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
             fixable.length > 0
               ? h('button', { className: 'dsh-ca-btn dsh-ca-btn-primary', type: 'button', disabled: busyId !== null, onClick: fixAll }, busyId === '*' ? s.envInstalling : s.envFixAll)
               : null,
+            props.update ? h(UpdateButton, { update: props.update, s }) : null,
             h('button', { className: 'dsh-ca-btn', type: 'button', onClick: () => load(true) }, s.refresh))),
         h('p', { className: 'dsh-ca-note', style: { marginTop: 0 } }, `${s.envHint}${data && data.platform ? ` (${data.platform})` : ''}`),
         state.phase === 'error'
@@ -729,6 +960,18 @@ window.__ModuleLoader__.load({
               : groups.map((group) => h('div', { key: group.title },
                 h('div', { className: 'dsh-ca-group' }, group.title),
                 group.items.map(renderDep))),
+        h('div', { className: 'dsh-ca-cli', 'data-dsh-craft-anything': 'cli-override' },
+          h('span', { className: 'dsh-ca-key' }, s.cliOverride),
+          h('input', {
+            type: 'text',
+            value: cliPath,
+            placeholder: s.cliOverridePlaceholder,
+            onChange: (event) => { setCliDirty(true); setCliPath(event.target.value) },
+            onKeyDown: (event) => { if (event.key === 'Enter') saveCli() },
+          }),
+          h('button', { className: 'dsh-ca-btn', type: 'button', disabled: busyId !== null, onClick: saveCli }, s.cliOverrideSave),
+          data && data.cliOverride ? h('button', { className: 'dsh-ca-btn', type: 'button', disabled: busyId !== null, onClick: clearCli }, s.cliOverrideClear) : null),
+        h('p', { className: 'dsh-ca-note', style: { marginTop: 6 } }, cliSaved ? s.cliOverrideSaved : s.cliOverrideHint),
         h('p', { className: 'dsh-ca-note' }, s.envRestartNote))
     }
 
@@ -766,6 +1009,8 @@ window.__ModuleLoader__.load({
       const data = bridgeState.state.data
       const bridge = data && data.bridge ? data.bridge : { enabled: true, allow: [] }
       const tools = data && data.tools ? data.tools : null
+      const visibleTools = tools && Number.isFinite(tools.visible) ? tools.visible : 0
+      const estimatedTokens = visibleTools > 0 ? Math.round(visibleTools * 270) : 0
       const [draft, setDraft] = React.useState('')
       const [dirty, setDirty] = React.useState(false)
       const [saved, setSaved] = React.useState(false)
@@ -791,7 +1036,7 @@ window.__ModuleLoader__.load({
                 onClick: () => apply({ enabled: !bridge.enabled }),
               }, bridge.enabled ? s.bridgeOn : s.bridgeOff),
               h('span', { className: 'dsh-ca-muted', style: { marginLeft: '8px', fontSize: '12px' } },
-                tools ? `${s.bridgeTools}: ${tools.visible} / ${tools.total}` : ''))),
+                tools ? s.bridgeTools + ': ' + tools.visible + ' / ' + tools.total + (estimatedTokens > 0 ? ' · ' + s.bridgeTokenEstimate.replace('{tokens}', (estimatedTokens / 1000).toFixed(1) + 'k') : '') : ''))),
           h(Row, { label: s.bridgeAllow },
             h('span', { style: { display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' } },
               h('input', {
@@ -810,6 +1055,9 @@ window.__ModuleLoader__.load({
             type: 'button',
             onClick: () => apply({ allow: preset.allow }),
           }, preset.label))),
+        data && data.switching ? h('p', { className: 'dsh-ca-warn', style: { fontSize: '12px', margin: '8px 0 0' } }, s.bridgeSwitching) : null,
+        visibleTools > 60 ? h('p', { className: 'dsh-ca-warn', style: { fontSize: '12px', margin: '8px 0 0' } }, s.bridgeTrimHint) : null,
+        h('p', { className: 'dsh-ca-note' }, s.bridgeNote),
         h('p', { className: 'dsh-ca-note' }, saved ? s.bridgeSaved : s.bridgeAllowHint))
     }
 
@@ -892,6 +1140,7 @@ window.__ModuleLoader__.load({
       const { state, fetchStatus } = useStatus()
       const modeState = useMode()
       const env = useEnv()
+      const update = useUpdate()
       const bridgeState = useBridge()
       const langState = useLang()
       const lang = langState[0]
@@ -905,7 +1154,7 @@ window.__ModuleLoader__.load({
               h('h1', { className: 'dsh-ca-title' }, 'Craft Anything'),
               h('p', { className: 'dsh-ca-sub' }, s.pageDesc)),
             h('div', { className: 'dsh-ca-head-side' }, h(LangSwitch, { langState }))),
-          h(EnvCard, { env, s, lang, onSettled: () => fetchStatus(true) }),
+          h(EnvCard, { env, s, lang, update, onSettled: () => fetchStatus(true) }),
           h(StatusCard, { state, fetchStatus, s, lang }),
           h(McpCard, { modeState, bridgeState, s, lang }),
           h(UsageCard, { s })))

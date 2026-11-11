@@ -1,5 +1,45 @@
 # 更新日志
 
+## [v0.5.0] - 2026-11-11
+
+回应 B 站实测视频（BV13n4J6yEhY）与来信里提到的两个问题：模式切换不再打断在途调用、Linux/macOS 一键安装 CLI 修好（并支持手动指定 CLI 路径）；同时按需求在环境卡加了「检查更新」按钮：查 GitHub 最新版本 → 一键安装 → 询问是否重启 DSH。
+
+### 修复
+
+- **模式切换打断在途调用（来信 1）**：v0.4.0 及以前写 `mode.json` 后启动器直接退出，`dsh-mcp-client` 重连，切换瞬间正在执行的 `tools/call` 会失败、工具列表短暂消失。v0.5.0 把 `scripts/mcp-bridge.cjs` 改成常驻的 MCP stdio 服务：检测到模式变化后先 drain 已转发未回包的请求（默认最多 20 秒，`CRAFT_ANYTHING_DRAIN_MS` 可调），期间的请求排队，然后按原有「双 SIGTERM → SIGKILL → 2.5 秒兜底」只替换 CLI 子进程，自己完成新子进程的 `initialize`/`initialized`/`tools/list` 握手（内部 id 永不下发 DSH），按原 id 重放排队与超时请求，最后发 `notifications/tools/list_changed`。**DSH 不重连、在途调用照常拿到结果**；子进程意外退出也会自动重拉，没有子进程时请求返回 `-32603` 而不是挂死。
+- **Linux 一键安装 CLI 报错（视频 1）**：v0.1.x 的 `package.json#files` 根本没打包 `scripts/install-cli.mjs`，非 Windows 上 `runCliInstaller()` 只会抛 "installer script is missing"（视频里的现象）。`install-cli.mjs` 重写为：从 release 元数据解析资产名（`craft-anything-<ver>-linux-{x86_64,aarch64,riscv64}.tar.gz` / macOS universal zip，元数据失败时回退构造名）、SHA256SUMS 强校验、递归查找任意嵌套目录里的 `craft-anything-cli`（优先）或 `craft-anything`、每个失败路径都给出可复制的回退命令；`CRAFT_ANYTHING_CLI` 已指向可用 CLI 时直接返回（不下载）。
+- **Linux 模式开关不生效（视频 2）**：视频测的是 v0.1.x，当时启动器只发一次 SIGTERM 而 CLI 故意忽略第一次；v0.2.0 已改成双 SIGTERM + SIGKILL + 2.5 秒兜底。v0.5.0 的桥内热切换进一步不再依赖 DSH 重连，三个平台走同一代码路径。
+- `dsh.plugin.json` 补上 v0.4.0 漏登记的 `craft_bridge` 工具。
+- 页面「CLI 路径」写入的 `CRAFT_ANYTHING_CLI` 现在参与 Host 的 CLI 发现（以前只影响子进程）。
+
+### 新增
+
+- **检查更新（页面按钮）**：环境与依赖卡顶部、「一键补齐可自动项」右边新增「检查更新 / Check for updates」，显示当前版本；点击查 GitHub 最新 Release，有新版本弹出确认框（当前 → 最新、Release 说明），确认后在插件所在 profile 里执行 `dsh plugin --profile <p> add github:Fanqi89/dsh-craft-anything#v<tag> --config.minimumReleaseAge=0`（固定标签），完成后弹「是否重启 DSH」，点是则由分离 helper 结束主进程并重新拉起。路由：`GET/POST /craft-anything/api/update`、`POST /craft-anything/api/restart`，与既有路由同一套鉴权。无网/限流/找不到 profile 只影响报告，不会改动已安装版本。
+- **环境卡「CLI 路径」输入框**：把已有 `craft-anything-cli` 的路径写进 `<root>/env.json`，Host 发现、安装器、MCP 启动器统一生效。
+- **上下文开销提示**：桥卡显示 `visible / total` 与估算 token；>60 个工具时提示可点「仅核心 / 仅调查流程」收窄。
+- 桥的 `mcp.state.json` 增加 `switching`、`pendingCalls`、`restarts`、`lastSwitchAt`、`lastRestartReason`；`GET /api/bridge` 同步返回切换状态；写入 `<root>/mcp.restart` 会用同一模式重启子进程（重装 CLI 后自动生效）。
+
+### 兼容性
+
+- `engines.dsh` 仍为 `>=0.2.1-rc.2`；新代码只用既有 `webServer` / `connection` / 工具注册 API。
+- 桥的 `start()` 签名、`bridge.json` 语义、导出都不变，`cordis.patch.yml` 的启动器无需修改。
+- 更新走 DSH 自带 CLI（`<app>/resources/app.asar/.../dsh-desktop-host/lib/cli.js` + `ELECTRON_RUN_AS_NODE`），不要求 PATH 上有 `dsh`；可用 `CRAFT_ANYTHING_DSH_CLI` 覆盖。
+
+### 验证
+
+- 桥：`node tests/bridge/run.cjs` **41/41**（5 次连跑全绿）：切换期间在途调用照常返回、期间的请求排队后被重放、桥 pid 全程不变、内部 id 零泄漏、`list_changed` 只发一次、drain 超时后同 id 重放且只回答一次、无子进程时 `-32603`、`mcp.restart` 重启同模式、`bridge.json` 过滤/关闭/恢复；真实 CLI 冒烟 clean 30 → deep 38 → clean 30（225/228 ms，桥 pid 不变）。
+- 安装器：`node tests/install-cli/run.cjs` **12/12**（Linux tar.gz 嵌套 FHS 布局、macOS zip、SHA256 不匹配、资产缺失、SHA256SUMS 缺项、无 CLI、`CRAFT_ANYTHING_CLI` 短路、元数据失败回退、`--dry-run`、缺 curl、`--force`）；真实 v0.6.0 API dry-run 解析出 `craft-anything-0.6.0-linux-x86_64.tar.gz` / `craft-anything-cli-0.6.0-macos-universal.zip`。
+- 更新：`node tests/update/check.mjs` 全绿（版本比较、GitHub 最新 Release、profile 发现）；`tests/update/install-probe.mjs` 用真实 DSH CLI + pnpm 把 **v0.4.0** 装进一次性 profile（34.1 s）：profile 依赖变为 `github:Fanqi89/dsh-craft-anything#v0.4.0`、`node_modules` 里包版本 0.4.0、`update.state.json` 落盘；`node tests/restart/run.mjs` 对 stand-in 进程验证「停旧进程 → 等退出 → 拉起新进程 → 清理 pending 标记」，含 pid 已消失的路径。
+- 页面：中英文、检查更新弹窗、更新进度、重启询问、CLI 路径输入框在 DSH 0.2.1-rc.5 真机页面验证（截图见 PR/发布说明）。
+
+### 已知限制
+
+- 超时未完成的调用会在新子进程上以同一 id 重放：read-only 工具，理论上可能重复执行一次（换来的是不再报错）。
+- 桥内部握手固定 `protocolVersion 2025-06-18`（`dsh-mcp-client` 协商的版本）；DSH 侧自己的 initialize 仍是客户端原始消息。
+- 一键更新依赖 GitHub 可达（走系统代理环境变量或 `env.json`）；完全离线时只能手动 `dsh plugin add`。
+- 重启会更换 Web 端口，当前页面需要重新打开；进行中的 agent 回合会中断。
+- 本机无 Linux/macOS，安装器的非 Windows 分支用 `--platform` 交叉验证（资产解析、下载、校验、解包、安装、失败路径），**未执行真实 Linux/macOS 二进制**。
+
 ## [v0.4.0] - 2026-11-08
 
 MCP 桥按需连接：新增桥开关与工具白名单（回应 issue #1「避免 300+ 工具常驻上下文」）。功能行为不变，新增的是可控性。

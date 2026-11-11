@@ -15,6 +15,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createUpdateService, UPDATE_ROUTE, RESTART_ROUTE, RESTART_SCRIPT } from './update.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const PACKAGE_DIR = path.resolve(HERE, '..')
@@ -27,6 +28,16 @@ const EXE_NAME = IS_WINDOWS ? 'craft-anything-cli.exe' : 'craft-anything-cli'
 const DEFAULT_ROOT = path.join(process.env.USERPROFILE || process.env.HOME || os.homedir(), '.dsh', 'plugins-data', 'craft-anything')
 
 const MAX_CAPTURE = 200_000
+
+/** The version of this plugin package, as loaded from disk right now. */
+function pluginVersion() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(PACKAGE_DIR, 'package.json'), 'utf8'))
+    return typeof parsed.version === 'string' ? parsed.version : null
+  } catch {
+    return null
+  }
+}
 
 function existsFile(candidate) {
   if (!candidate) return false
@@ -61,7 +72,7 @@ function newestFirst(names) {
 
 function resolveCli(config = {}) {
   const root = config.installDir || process.env.CRAFT_ANYTHING_ROOT || DEFAULT_ROOT
-  const explicit = config.cliPath || process.env.CRAFT_ANYTHING_CLI
+  const explicit = config.cliPath || process.env.CRAFT_ANYTHING_CLI || readEnvFile(config).CRAFT_ANYTHING_CLI
   if (explicit && existsFile(explicit)) return { cli: explicit, root, source: 'config' }
   // A stale CRAFT_ANYTHING_CLI must not hide a working install: fall through to the scan.
   const staged = path.join(root, 'bin', EXE_NAME)
@@ -118,6 +129,13 @@ function readMcpState(config = {}) {
       cli: typeof parsed.cli === 'string' ? parsed.cli : null,
       version: typeof parsed.version === 'string' ? parsed.version : null,
       pid: Number.isFinite(parsed.pid) ? parsed.pid : null,
+      // v0.5.0: the bridge swaps the CLI child in-process and drains in-flight calls first, so the
+      // state also reports a switch that is still in progress.
+      switching: parsed.switching === true,
+      pendingCalls: Number.isFinite(parsed.pendingCalls) ? parsed.pendingCalls : 0,
+      restarts: Number.isFinite(parsed.restarts) ? parsed.restarts : 0,
+      lastSwitchAt: typeof parsed.lastSwitchAt === 'string' ? parsed.lastSwitchAt : null,
+      lastRestartReason: typeof parsed.lastRestartReason === 'string' ? parsed.lastRestartReason : null,
     }
   } catch {
     return null
@@ -145,11 +163,24 @@ async function setMode(config, mode) {
       note: 'mode saved; the bridge is not running in this Harness yet, so it will start in this mode next time.',
     }
   }
-  const deadline = Date.now() + 8_000
+  // Since v0.5.0 the bridge drains in-flight calls before it swaps the CLI child
+  // (CRAFT_ANYTHING_DRAIN_MS, default 20 s), so give it its own drain window plus a margin
+  // instead of the old 8 s reconnect deadline.
+  const configured = Number(process.env.CRAFT_ANYTHING_DRAIN_MS)
+  const drainMs = Number.isFinite(configured) && configured > 0 ? Math.min(120_000, Math.max(1_000, configured)) : 20_000
+  const deadline = Date.now() + drainMs + 6_000
+  const beforeRestarts = before && Number.isFinite(before.restarts) ? before.restarts : 0
   while (Date.now() < deadline) {
     const state = readMcpState(config)
     if (state && state.mode === wanted) {
-      return { mode: wanted, changed: true, applied: true, restarted: true, server: state }
+      return {
+        mode: wanted,
+        changed: true,
+        applied: true,
+        restarted: state.restarts > beforeRestarts,
+        switching: false,
+        server: state,
+      }
     }
     await sleep(200)
   }
@@ -158,7 +189,8 @@ async function setMode(config, mode) {
     changed: true,
     applied: false,
     restarted: false,
-    note: 'mode.json was written, but the MCP server has not confirmed the new mode yet; it reconnects within a few seconds (or start the plugin again).',
+    note: 'mode.json was written, but the MCP bridge is still draining in-flight calls; the tool list refreshes automatically when the switch finishes.',
+    server: readMcpState(config),
   }
 }
 
@@ -775,6 +807,10 @@ function bridgeReport(config = {}) {
     bridge,
     bridgeFile: bridgeFile(config),
     tools: state && state.tools && Number.isFinite(state.tools.visible) ? state.tools : null,
+    switching: Boolean(state && state.switching === true),
+    pendingCalls: state && Number.isFinite(state.pendingCalls) ? state.pendingCalls : 0,
+    restarts: state && Number.isFinite(state.restarts) ? state.restarts : 0,
+    lastSwitchAt: state && typeof state.lastSwitchAt === 'string' ? state.lastSwitchAt : null,
     server: state
       ? { mode: state.mode === 'deep' ? 'deep' : 'clean', pid: Number.isFinite(state.pid) ? state.pid : null, startedAt: typeof state.startedAt === 'string' ? state.startedAt : null }
       : null,
@@ -994,6 +1030,14 @@ function writeEnvFile(config, patch) {
   return merged
 }
 
+function removeEnvKey(config, key) {
+  const current = { ...readEnvFile(config) }
+  delete current[key]
+  fs.mkdirSync(installRoot(config), { recursive: true })
+  fs.writeFileSync(envFile(config), `${JSON.stringify(current, null, 2)}\n`)
+  return current
+}
+
 /** Environment for spawned CLI processes: the Harness env plus install-time overrides. */
 function envForChild(config = {}) {
   return { ...process.env, ...readEnvFile(config) }
@@ -1160,13 +1204,13 @@ async function runCliInstaller(config, options = {}) {
     const argv = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', INSTALLER, '-Version', version]
     if (force) argv.push('-Force')
     if (config.installDir) argv.push('-Root', config.installDir)
-    return run('powershell.exe', argv, { timeoutMs: 900_000, signal })
+    return run('powershell.exe', argv, { timeoutMs: 900_000, signal, env: envForChild(config) })
   }
   if (!existsFile(INSTALLER_NODE)) throw new Error(`installer script is missing from the plugin package: ${INSTALLER_NODE}`)
   const argv = [INSTALLER_NODE, '--version', version]
   if (force) argv.push('--force')
   if (config.installDir) argv.push('--root', config.installDir)
-  const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
+  const env = { ...envForChild(config), ELECTRON_RUN_AS_NODE: '1' }
   return run(process.execPath, argv, { timeoutMs: 900_000, signal, env })
 }
 
@@ -1270,6 +1314,7 @@ function startEnvJobById(config, id) {
     return engine && engine.found ? String(engine.found) : null
   }
   const envValues = readEnvFile(config)
+  const cliOverride = envValues.CRAFT_ANYTHING_CLI || null
   const agent = which('claude') || which('claude.cmd')
   const npm = which('npm') || which('npm.cmd') || which('npm.exe')
   const ghidra = findEngine('ghidra')
@@ -1285,7 +1330,9 @@ function startEnvJobById(config, id) {
       label: { en: 'craft-anything CLI', zh: 'craft-anything CLI' },
       hint: { en: 'The local CLI behind every mcp__craft__* tool.', zh: '所有 mcp__craft__* 工具背后的本地 CLI。' },
       state: resolved.cli ? 'ok' : 'missing',
-      detail: resolved.cli ? `${status.version || 'installed'}${status.portable ? ' · portable' : ''}` : 'not installed',
+      detail: resolved.cli
+        ? (status.version || 'installed') + (status.portable ? ' · portable' : '') + (cliOverride ? ' · CRAFT_ANYTHING_CLI' : '')
+        : 'not installed',
     },
     {
       id: 'chromium',
@@ -1344,6 +1391,10 @@ function startEnvJobById(config, id) {
     platform: `${process.platform}-${process.arch}`,
     envFile: envFile(config),
     envValues,
+    cliOverride,
+    cliSource: resolved.source,
+    cliPath: resolved.cli,
+    plugin: { version: pluginVersion(), packageDir: PACKAGE_DIR },
     engineStore: data && data.engine_store ? String(data.engine_store) : null,
     deepMode: data && data.deep_mode ? data.deep_mode : null,
     jobs: envJobsSnapshot(),
@@ -1378,6 +1429,18 @@ function envRouteHandler(getSettings) {
     const action = body && typeof body.action === 'string' ? body.action : ''
     const settings = getSettings()
     try {
+      if (action === 'set-cli') {
+        const value = body && typeof body.path === 'string' ? body.path.trim() : ''
+        if (value && !existsFile(value)) {
+          send(400, { ok: false, error: 'no executable file at ' + value })
+          return
+        }
+        if (value) writeEnvFile(settings, { CRAFT_ANYTHING_CLI: value })
+        else removeEnvKey(settings, 'CRAFT_ANYTHING_CLI')
+        invalidateProbes()
+        send(200, { ok: true, action: 'set-cli', cliOverride: value || null, envFile: envFile(settings) })
+        return
+      }
       if (action === 'install') {
         const id = body && typeof body.id === 'string' ? body.id : ''
         const job = id ? startEnvJobById(settings, id) : null
@@ -1406,6 +1469,73 @@ function envRouteHandler(getSettings) {
   }
 }
 
+// --- plugin update + Harness restart ---------------------------------------------------------
+// The update route only touches this plugin: it asks GitHub for the newest release tag, then runs
+// the Harness own `dsh plugin add` on the profile that depends on this plugin. The restart route
+// hands that job to a detached helper (scripts/restart-dsh.mjs) because a process cannot restart
+// itself without losing the HTTP response the page is waiting for.
+
+function updateRouteHandler(service) {
+  return async (req, res) => {
+    const send = (code, payload) => {
+      res.statusCode = code
+      res.setHeader('content-type', 'application/json; charset=utf-8')
+      res.setHeader('cache-control', 'no-store')
+      res.end(JSON.stringify(payload))
+    }
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      try {
+        const force = typeof req.url === 'string' && /[?&]full=1(?:&|$)/.test(req.url)
+        send(200, await service.updateReport({ force }))
+      } catch (error) {
+        send(500, { ok: false, error: String((error && error.message) || error) })
+      }
+      return
+    }
+    if (req.method !== 'POST') {
+      send(405, { ok: false, error: 'GET or POST only' })
+      return
+    }
+    const body = await readJsonBody(req, 8 * 1024)
+    const action = body && typeof body.action === 'string' ? body.action : 'install'
+    try {
+      if (action === 'check') {
+        send(200, await service.updateReport({ force: true }))
+        return
+      }
+      if (action === 'install') {
+        const snapshot = service.startInstall({ force: body && body.force === true })
+        send(202, { ok: true, job: snapshot })
+        return
+      }
+      send(400, { ok: false, error: 'action must be check or install' })
+    } catch (error) {
+      send(500, { ok: false, error: String((error && error.message) || error) })
+    }
+  }
+}
+
+function restartRouteHandler(service) {
+  return async (req, res) => {
+    const send = (code, payload) => {
+      res.statusCode = code
+      res.setHeader('content-type', 'application/json; charset=utf-8')
+      res.setHeader('cache-control', 'no-store')
+      res.end(JSON.stringify(payload))
+    }
+    if (req.method !== 'POST') {
+      send(405, { ok: false, error: 'POST only' })
+      return
+    }
+    try {
+      const result = service.restart()
+      send(result.ok ? 200 : 409, result)
+    } catch (error) {
+      send(500, { ok: false, error: String((error && error.message) || error) })
+    }
+  }
+}
+
 export function apply(ctx, config) {
   // A patch row with only comments parses as `config: null`, so normalize both null and
   // undefined before reading the knobs.
@@ -1423,7 +1553,8 @@ export function apply(ctx, config) {
   try {
     fs.mkdirSync(installRoot(settings), { recursive: true })
     fs.copyFileSync(path.join(PACKAGE_DIR, 'scripts', 'mcp-bridge.cjs'), path.join(installRoot(settings), 'mcp-bridge.cjs'))
-  } catch { /* launcher falls back to pass-through */ }
+    fs.copyFileSync(path.join(PACKAGE_DIR, 'scripts', 'restart-dsh.mjs'), path.join(installRoot(settings), RESTART_SCRIPT))
+  } catch { /* the launcher/bridge falls back; restart reports a missing helper */ }
 
   const definitions = [statusTool(settings), cliTool(settings), installTool(settings), modeTool(settings), bridgeTool(settings)]
   ctx.effect(() => {
@@ -1445,6 +1576,20 @@ export function apply(ctx, config) {
   // Management-interface auth: one random token per Harness process, written owner-only for local
   // CLI clients and bootstrapped by the Web page; every route below sits behind guarded().
   const httpAuth = createHttpAuth(ctx, settings)
+
+  // Update check / one-click update / restart (see host/update.mjs for the whole flow).
+  const updateService = createUpdateService({
+    PACKAGE_DIR,
+    IS_WINDOWS,
+    run,
+    which,
+    existsFile,
+    installRoot,
+    readEnvFile,
+    envForChild,
+    proxyUrl,
+    invalidateProbes,
+  })
 
   // The Web page reads live install state from this route. webServer is optional:
   // without it (TUI-only profile) the tools still work and the page is not mounted.
@@ -1468,6 +1613,14 @@ export function apply(ctx, config) {
     webCtx.effect(
       () => webCtx.webServer.register({ kind: 'exact', path: BRIDGE_ROUTE, handler: guarded(bridgeRouteHandler(() => settings), httpAuth) }),
       'dsh-craft-anything: bridge route',
+    )
+    webCtx.effect(
+      () => webCtx.webServer.register({ kind: 'exact', path: UPDATE_ROUTE, handler: guarded(updateRouteHandler(updateService), httpAuth) }),
+      'dsh-craft-anything: update route',
+    )
+    webCtx.effect(
+      () => webCtx.webServer.register({ kind: 'exact', path: RESTART_ROUTE, handler: guarded(restartRouteHandler(updateService), httpAuth) }),
+      'dsh-craft-anything: restart route',
     )
   })
 }
