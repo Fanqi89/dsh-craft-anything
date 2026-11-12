@@ -1,5 +1,28 @@
 # 更新日志
 
+## [v0.6.1] - 2026-11-12
+
+修复 issue #2：`core_evidence_browse` 的 `inputSchema` 里有一个布尔子 schema（`properties.evidence: true`），basalt / LM Studio / llama.cpp server 这类把工具 schema 编译成解码语法的后端会因此让**整个请求 400**（表现为整轮对话失败，看不出跟插件有关）。同时补上 README 徽章。
+
+### 修复
+
+- **布尔子 schema 让整轮请求 400（issue #2）**：JSON Schema draft-07 允许把子 schema 写成布尔（`true` ≡ 任意值），上游 schemars 对 `serde_json::Value` 就是这么生成的；但 llama.cpp 的 schema→grammar 转换器要求每个子 schema 是对象。现在 `scripts/mcp-bridge.cjs` 在 `tools/list` 出口统一归一化：`true` → `{}`、`false` → `{ "not": {} }`，语义完全等价；`additionalProperties` 的布尔保持不变（实测这些本来就合法）。桥是所有工具列表的唯一必经点，所以以后上游再新增同类字段也会被兜住，不用等上游发版。
+
+### 新增
+
+- README 顶部徽章：GitRank 评分、DSH（≥0.2.1-rc.2）、DeepSeek Harness 插件库收录、`dsh-plugin` topic、最新 Release、MIT 许可证。
+- 新增回归测试 `tests/bridge/bool-schema.mjs`：假 MCP 服务返回 `evidence: true`，断言桥下发 `{}`、`additionalProperties: false` 保持不变、普通 schema 不动。
+
+### 验证
+
+- `tests/bridge/run.cjs` **41/41**、`tests/bridge/bool-schema.mjs` **7/7**。
+- 真实 CLI（`--all-tools --deep`，**321 个工具**）过桥后：`evidence:true` 剩余 **0** 处、`evidence:{}` **1** 处（正是 `core_evidence_browse` 的那一处）；321 个工具里没有其它布尔子 schema。
+- 复现口径与 issue 一致：修复前只坏这一个工具，但会让整轮请求失败；修复后按 issue 里的最小对照实验应全部 200。
+
+### 已知限制
+
+- 只归一化 `tools/list` 下发的 schema；上游 CLI 自身的 `--json` 输出不受影响。建议上游也用 `schemars(schema_with)` 把该字段渲染成对象（issue 建议的修法 A），桥的兜底只是接入层保险。
+
 ## [v0.6.0] - 2026-11-11
 
 修复别人机器上一键安装依赖整片失败的问题，并按需求把下载改成"最快镜像优先、官方源兜底"，把原来只能复制命令的依赖也变成点一下就装。

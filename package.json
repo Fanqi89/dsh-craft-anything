@@ -1,6 +1,6 @@
 {
   "name": "dsh-craft-anything",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "type": "module",
   "description": "Craft Anything for DeepSeek Harness: MCP bridge to the local craft-anything CLI (study any website, app or game and have a coding agent rebuild it) plus status, CLI-runner and installer tools and a status page.",

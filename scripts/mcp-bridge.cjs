@@ -276,9 +276,39 @@ function start(options) {
     return matchers.some((matcher) => matcher.test(name))
   }
 
+  // Some backends (basalt, LM Studio, llama.cpp server) compile tool schemas into a decoding
+  // grammar and reject the WHOLE request when any subschema is a boolean: JSON Schema draft-07
+  // allows `true`, llama.cpp's converter wants an object. Upstream ships one such schema today
+  // (core_evidence_browse -> properties.evidence: true, schemars' rendering of a JSON value), and
+  // any future tool can add another, so normalize at the single point every tools/list passes.
+  // true -> {} (any value), false -> { not: {} } (nothing); `additionalProperties` booleans are
+  // accepted by those backends and are left untouched.
+  function normalizeSchemaNode(node, keyHint) {
+    if (node === true) return keyHint === 'additionalProperties' ? true : {}
+    if (node === false) return keyHint === 'additionalProperties' ? false : { not: {} }
+    if (!node || typeof node !== 'object') return node
+    if (Array.isArray(node)) return node.map((item) => normalizeSchemaNode(item))
+    const out = {}
+    for (const key of Object.keys(node)) {
+      const value = node[key]
+      if ((key === 'properties' || key === 'patternProperties') && value && typeof value === 'object' && !Array.isArray(value)) {
+        const map = {}
+        for (const name of Object.keys(value)) map[name] = normalizeSchemaNode(value[name])
+        out[key] = map
+        continue
+      }
+      out[key] = normalizeSchemaNode(value, key)
+    }
+    return out
+  }
+
   function applyToolsFilter(tools) {
     const list = Array.isArray(tools) ? tools : []
-    const visible = list.filter((tool) => tool && typeof tool.name === 'string' && allowed(tool.name))
+    const visible = list
+      .filter((tool) => tool && typeof tool.name === 'string' && allowed(tool.name))
+      .map((tool) => (tool.inputSchema && typeof tool.inputSchema === 'object'
+        ? Object.assign({}, tool, { inputSchema: normalizeSchemaNode(tool.inputSchema) })
+        : tool))
     detail = { total: list.length, visible: visible.length }
     return visible
   }

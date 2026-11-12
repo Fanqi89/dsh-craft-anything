@@ -1,5 +1,14 @@
 # dsh-craft-anything
 
+<p align="center">
+  <a href="https://gitrank.cc/en/repo/Fanqi89/dsh-craft-anything/"><img src="https://gitrank.cc/badges/Fanqi89/dsh-craft-anything.svg" alt="GitRank Score"></a>
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DSH-%E2%89%A50.2.1--rc.2-4d6bfe" alt="DeepSeek Harness ≥0.2.1-rc.2"></a>
+  <a href="https://deepseek-harness-plugin.com/zh-CN/plugins/dsh-craft-anything/"><img src="https://img.shields.io/badge/DSH%20plugin%20directory-listed-2ea44f" alt="DeepSeek Harness 插件库已收录"></a>
+  <a href="https://github.com/topics/dsh-plugin"><img src="https://img.shields.io/badge/topic-dsh--plugin-8957e5" alt="dsh-plugin topic"></a>
+  <a href="https://github.com/Fanqi89/dsh-craft-anything/releases"><img src="https://img.shields.io/github/v/release/Fanqi89/dsh-craft-anything" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow" alt="MIT license"></a>
+</p>
+
 把 [Craft Anything](https://github.com/storytold/craft-anything)（ArtCraft 的开源「看清任意软件怎么工作，再让 AI 帮你重做一个」引擎）接进 **DeepSeek Harness (DSH)**：
 本地 `craft-anything-cli` 的 MCP 工具以 `mcp__craft__*` 出现在 DSH 里，另配状态页、命令运行器、安装器和**净室 / 深度模式切换**。
 
@@ -14,13 +23,14 @@
 | 能力 | 说明 |
 |---|---|
 | **MCP 桥** | 用 DSH 自带的 `@deepseek-ai/dsh-mcp-client` 连接本地 `craft-anything-cli mcp`，工具名 `mcp__craft__core_target_open` 等。默认暴露 Essentials（30 个工具）；深度模式 38 个；运行时用 `mcp__craft__list_toolsets` / `mcp__craft__enable_toolset` 按需加载 native / browser / android / java / managed / formats 等工具集。 |
-| **模式切换（净室 ⇄ 深度）** | DSH 对话框左下角工具行里的下拉开关（「净室模式 / 深度模式」，紧邻其它插件的模式开关但不重叠）；也可用 `craft_mode` 工具切换。切换会写入 `mode.json` 并重启 MCP 服务进程，`dsh-mcp-client` 自动重连，工具列表 1–2 秒内在新模式重新同步。重启使用「SIGTERM → 1.5 秒 SIGKILL → 3 秒强制退出」的兜底，进程不响应信号也不会把 DSH 拖住。 |
+| **模式切换（净室 ⇄ 深度）** | DSH 对话框左下角工具行里的下拉开关（「净室模式 / 深度模式」，紧邻其它插件的模式开关但不重叠）；也可用 `craft_mode` 工具切换。v0.5.0 起由桥进程内部热切换：先等正在执行的调用结束（默认最多 20 秒），期间调用排队，随后只替换 CLI 子进程并自动刷新工具列表，**DSH 不重连、在途调用不失败**。 |
 | **状态工具** `craft_status` | CLI 路径/版本、是否 portable、工具集与工具数量、可用引擎（chromium/gdb/java/objdump…）、Ghidra 与编码智能体是否就绪、MCP 连接方式。结果缓存 5–10 分钟，`refresh:true` 强制重跑。 |
 | **命令运行器** `craft_cli` | 以参数数组直调 CLI（无 shell）：`rebuild`、`doctor`、`setup`、`report`、`triage`、`commands`、`capabilities` 等。长任务可放大 `timeoutMs`；取消/超时会 SIGKILL 兜底，不会挂住工具调用。 |
-| **安装器** `craft_install` | 从 GitHub Releases 下载官方 CLI 到 `~/.dsh/plugins-data/craft-anything/<版本>/`，**解压前校验 SHA256**（对照 release 的 `SHA256SUMS.txt`），已安装则秒回；成功后自动重启 MCP 桥以使用新 CLI（无需重开 DSH）。Windows 用 portable zip（`scripts/install-cli.ps1`），macOS 用官方 universal CLI zip，Linux 用 release tarball（best effort）。 |
+| **安装器 / 一键更新** `craft_install`、页面「检查更新」 | 从 GitHub Releases 下载官方 CLI 到 `~/.dsh/plugins-data/craft-anything/<版本>/`，**解压前校验 SHA256**（对照 release 的 `SHA256SUMS.txt`），已安装则秒回；成功后自动重启 MCP 桥。v0.6 起下载先测速选最快的 GitHub 镜像（`scripts/mirrors.mjs`，失败自动回退官方源，镜像只提供字节、真伪仍由 SHA256SUMS 决定）；Windows 用 curl 优先（IWR 兜底）+ TLS 1.2。页面还能检查并更新插件本身，更新后询问是否重启 DSH。 |
 | **MCP 桥按需开关 / 工具白名单** | 响应 issue #1：桥默认仍全开，但可在页面或输入栏一键关闭（`mcp__craft__*` 工具立即从上下文移除），或用 `allow` 白名单（如 `core_*`）只注册需要的工具；通过 MCP `tools/list_changed` 动态重同步，**不重启 CLI/桥/DSH**。另有 `craft_bridge` 工具。 |
 | **中英文切换** | 页面右上角「中文 / English」分段开关，切换整个页面、模式菜单与所有卡片文案；选择记在 localStorage，首次打开跟随浏览器语言（中文系统自动中文）。 |
-| **环境与依赖（一键补齐）** | 新增「环境与依赖」卡：按操作系统自动检查 CLI、Chromium 浏览器、Claude Code 编码智能体、Ghidra、Java 21+、GDB；可自动安装的项右侧直接「一键安装」（后台任务 + 实时日志），手动项「复制命令」；顶部「一键补齐可自动项」一次处理全部缺失项。 |
+| **环境与依赖（一键补齐）** | 「环境与依赖」卡按操作系统检查 CLI、Chromium 浏览器、Claude Code、Ghidra、Java 21+、GDB；v0.6 起**全部可自动安装**（Chromium / Java / GDB 走 winget / brew / apt，Claude Code 走 npm 镜像或官方 registry，缺 Node 时先装 Node），失败时仍给出「复制命令」；顶部「一键补齐可自动项」一次处理全部缺失项。 |
+| **工具 schema 归一化** | 响应 issue #2：桥在 `tools/list` 出口把布尔子 schema 归一化（`true` → `{}`，`false` → `{ not: {} }`，`additionalProperties` 布尔保留），避免 basalt / LM Studio / llama.cpp 这类 grammar 后端因为一个 `evidence: true` 让**整轮请求 400**。只改传输层，工具调用语义不变。 |
 | **状态页** | 左侧栏「Craft Anything」图标 → 中央面板显示本地安装、能力、MCP 桥与常用命令；数据来自插件自己的 `GET /craft-anything/api/status`（默认缓存 60 秒，页面手动刷新走 `?full=1`）。 |
 
 截图（DSH 对话框左下角的模式开关、左侧栏入口、状态页）见仓库 Releases / 使用说明；界面文字与状态实时读取本机。
