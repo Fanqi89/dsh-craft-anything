@@ -4,6 +4,10 @@
   <a href="https://gitrank.cc/en/repo/Fanqi89/dsh-craft-anything/"><img src="https://gitrank.cc/badges/Fanqi89/dsh-craft-anything.svg" alt="GitRank Score"></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DSH-%E2%89%A50.2.1--rc.2-4d6bfe" alt="DeepSeek Harness ≥0.2.1-rc.2"></a>
   <a href="https://deepseek-harness-plugin.com/zh-CN/plugins/dsh-craft-anything/"><img src="https://img.shields.io/badge/DSH%20plugin%20directory-listed-2ea44f" alt="DeepSeek Harness 插件库已收录"></a>
+  <a href="https://www.dsh.so/artifact/dsh-craft-anything/?ref=badge"><img src="https://cdn.dsh.so/badge/dsh-craft-anything.svg" alt="dsh.so 风险评估 · 低风险"></a>
+  <a href="https://dsh-ai.com/plugins/Fanqi89/dsh-craft-anything/"><img src="https://img.shields.io/badge/dsh--ai.com-listed-0ea5e9" alt="dsh-ai.com 插件页"></a>
+  <a href="https://dpharness.com/plugin/Fanqi89/dsh-craft-anything"><img src="https://dpharness.com/badge/install/Fanqi89/dsh-craft-anything.svg" alt="dpharness.com dsh install 状态（站点动态徽章）"></a>
+  <a href="https://dshopen.org/zh/plugins/dsh-craft-anything/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fdshopen.org%2Fbadge%2Fdsh-craft-anything.json" alt="dshopen 开放插件市场 · 已收录"></a>
   <a href="https://github.com/topics/dsh-plugin"><img src="https://img.shields.io/badge/topic-dsh--plugin-8957e5" alt="dsh-plugin topic"></a>
   <a href="https://github.com/Fanqi89/dsh-craft-anything/releases"><img src="https://img.shields.io/github/v/release/Fanqi89/dsh-craft-anything" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow" alt="MIT license"></a>
