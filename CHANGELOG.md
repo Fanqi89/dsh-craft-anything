@@ -1,5 +1,26 @@
 # 更新日志
 
+## [v0.7.1] - 2026-11-16
+
+合并社区 PR [#4](https://github.com/Fanqi89/dsh-craft-anything/pull/4)（作者 [@yuran123345678](https://github.com/yuran123345678)，rebase 合并，署名保留）：输入框工具行的两个 Craft Anything 控件（模式、MCP 桥）从带边框的胶囊改成**纯文本 + 一个小状态点**，不再和旁边的文字抢视觉；风格改动后补了一条配色语义修正，并随本次发版带上 README 顶部的插件图标。
+
+### 变更
+
+- **两个 chip 改为纯文本 + 小状态点（PR #4）**：去掉边框、底色和悬停底色，文字用 `color: inherit` + `opacity: .85`（悬停恢复 `label-primary` / 不透明）；状态点 7px → 6px，默认灰（`border-l2`），`background 150ms` 过渡，切状态时能看见但不吵。模式和桥的标签、`aria-pressed`、点击行为都没变。
+- **状态点配色语义（维护者跟进）**：琥珀色（主题的 warn token）只用于**非默认状态**——模式 chip 的「深度模式」、桥 chip 的「关闭」；默认的「净室 + 桥开」保持灰点。这样两个 chip 的配色语言一致（灰=默认、琥珀=值得注意），默认状态也不会常驻一个警告色点。同时把状态规则限定为 `:not(:disabled)`，请求进行中时开关仍按 `:disabled` 变暗（原先 `[data-deep="true"]` 的 `opacity:1` 会盖掉 `:disabled`）。
+- **README 顶部图标**：v0.7.0 之后补的 docs 改动（`icon.svg` 居中 112×112，位于标题与徽章之上），随本版一起打包。
+
+### 验证
+
+- 合并前在贡献者分支上独立复跑：`node --check client.js`、`tests/ui/run.mjs` 14/14、`tests/ui/client-registration.mjs` 4/4、`tests/bridge/run.cjs` 41/41，与其 PR 里给出的数字一致。
+- 跟进改动后同样复跑三套测试全绿，`node --check` 通过；只改 CSS 字符串与一个 data 属性，无逻辑/接口变化。
+- 视觉验收限制：本机运行中的 Harness 仍加载上一次启动的模块，且没有浏览器自动化，**像素级观感（点的大小、灰/琥珀对比、窄窗口下是否真的更安静）尚未在真实页面里复核**，待更新+重启后确认。
+
+### 已知限制
+
+- 纯文本样式把点击区域压到约 20px 高（`padding: 4px 2px`，去掉了边框），桌面端够用，触屏上偏小；如果后续收到误触反馈，再单独把 `min-height` 调回 24px。
+- 状态点颜色改由 `data-deep` / `data-on` 两个属性驱动，目前只有 `client.js` 消费它们；以后加新 chip 要沿用同一套语义（灰=默认、琥珀=非默认）。
+
 ## [v0.7.0] - 2026-11-15
 
 处理 issue #3：输入框工具行里的两个 Craft Anything 控件（净室/深度模式开关、MCP 桥开关）现在可以在**设置 → Craft Anything** 里分别隐藏，窄窗口和手机上不再和别的开关挤在一起。隐藏只针对 composer 控件：模式、桥的状态、`mcp__craft__*` 工具和插件页都不受影响。
