@@ -32,6 +32,7 @@
 | **命令运行器** `craft_cli` | 以参数数组直调 CLI（无 shell）：`rebuild`、`doctor`、`setup`、`report`、`triage`、`commands`、`capabilities` 等。长任务可放大 `timeoutMs`；取消/超时会 SIGKILL 兜底，不会挂住工具调用。 |
 | **安装器 / 一键更新** `craft_install`、页面「检查更新」 | 从 GitHub Releases 下载官方 CLI 到 `~/.dsh/plugins-data/craft-anything/<版本>/`，**解压前校验 SHA256**（对照 release 的 `SHA256SUMS.txt`），已安装则秒回；成功后自动重启 MCP 桥。v0.6 起下载先测速选最快的 GitHub 镜像（`scripts/mirrors.mjs`，失败自动回退官方源，镜像只提供字节、真伪仍由 SHA256SUMS 决定）；Windows 用 curl 优先（IWR 兜底）+ TLS 1.2。页面还能检查并更新插件本身，更新后询问是否重启 DSH。 |
 | **MCP 桥按需开关 / 工具白名单** | 响应 issue #1：桥默认仍全开，但可在页面或输入栏一键关闭（`mcp__craft__*` 工具立即从上下文移除），或用 `allow` 白名单（如 `core_*`）只注册需要的工具；通过 MCP `tools/list_changed` 动态重同步，**不重启 CLI/桥/DSH**。另有 `craft_bridge` 工具。 |
+| **输入框开关可隐藏** | 响应 issue #3：工具行的模式开关和 MCP 桥开关可以在**设置 → Craft Anything** 里分别隐藏（窄窗口/手机不再挤）；隐藏是取消注册槽位，模式与桥的状态、工具、插件页都不受影响。偏好存 `<root>\ui.json`，也可用 `CRAFT_ANYTHING_COMPOSER_MODE` / `CRAFT_ANYTHING_COMPOSER_BRIDGE` 或行配置控制。 |
 | **中英文切换** | 页面右上角「中文 / English」分段开关，切换整个页面、模式菜单与所有卡片文案；选择记在 localStorage，首次打开跟随浏览器语言（中文系统自动中文）。 |
 | **环境与依赖（一键补齐）** | 「环境与依赖」卡按操作系统检查 CLI、Chromium 浏览器、Claude Code、Ghidra、Java 21+、GDB；v0.6 起**全部可自动安装**（Chromium / Java / GDB 走 winget / brew / apt，Claude Code 走 npm 镜像或官方 registry，缺 Node 时先装 Node），失败时仍给出「复制命令」；顶部「一键补齐可自动项」一次处理全部缺失项。 |
 | **工具 schema 归一化** | 响应 issue #2：桥在 `tools/list` 出口把布尔子 schema 归一化（`true` → `{}`，`false` → `{ not: {} }`，`additionalProperties` 布尔保留），避免 basalt / LM Studio / llama.cpp 这类 grammar 后端因为一个 `evidence: true` 让**整轮请求 400**。只改传输层，工具调用语义不变。 |
@@ -110,8 +111,11 @@ mcp__craft__core_report_write  { "format": "markdown" }
 ### 2) 切换净室 / 深度
 
 - 对话框左下角工具行的下拉开关：`● 净室模式 ▴` → 选「深度模式」；
+- 或插件页（侧栏 Craft Anything）的 MCP 卡里的模式开关；
 - 或 `craft_mode { "mode": "deep" }`（不带参数只读取当前模式）；
 - 或单次命令加 `--deep`：`craft_cli { "args": ["rebuild", "<目标>", "<想要什么>", "--deep"] }`。
+
+工具行里的两个开关（模式、MCP 桥）嫌挤可以隐藏：**设置 → Craft Anything → 输入框开关**（v0.7.0，issue #3），隐藏后仍然可以从插件页或工具切换。
 
 切换是**全局**的（对整个 DSH 的 MCP 连接生效）。v0.5.0 起切换在桥进程内部完成：先等正在执行的调用结束（最多 20 秒，`CRAFT_ANYTHING_DRAIN_MS` 可调），期间到达的调用排队，然后只替换 CLI 子进程并自动刷新工具列表——**DSH 不重连、在途调用不再失败**。
 
@@ -139,6 +143,8 @@ craft_cli { "args": ["doctor"] }
     installDir: 'D:\craft-anything'                # 覆盖安装根目录
     projectDir: 'D:\craft-anything\work'           # craft_cli 的默认 cwd
     projectsRoot: 'D:\craft-anything\projects'     # 状态页显示
+    composerMode: true                             # 输入框是否显示净室/深度开关（默认 true；设置页写入的 ui.json 优先）
+    composerBridge: true                           # 输入框是否显示 MCP 桥开关（默认 true）
 - id: craft-anything-mcp
   name: '@deepseek-ai/dsh-mcp-client'
   config:
@@ -147,6 +153,18 @@ craft_cli { "args": ["doctor"] }
 
 - CLI 发现顺序：`config.cliPath` → `CRAFT_ANYTHING_CLI`（环境变量或 `<root>\env.json`，页面「CLI 路径」保存的就是它）→ `<root>\bin\craft-anything-cli.exe` → `<root>\<版本>\craft-anything-cli.exe` → PATH。
 - 模式文件：`<root>\mode.json`（`{"mode":"clean"}` / `{"mode":"deep"}`）；运行状态：`<root>\mcp.state.json`。
+
+### 输入框开关（v0.7.0，issue #3）
+
+输入框下面工具行的两个控件——**净室/深度模式开关**和 **MCP 桥开关**——都可以隐藏，窄窗口和手机上不再和别的开关挤在一起：
+
+- 界面：**设置 → Craft Anything → 输入框开关**，两个独立开关（`显示中` / `已隐藏`），改完立即生效，不用重启；
+- 隐藏只是把那个槽位**取消注册**（不是渲染一个空盒子），工具行不留空位；
+- 模式和桥的当前状态都不变，`mcp__craft__*` 工具照常工作，插件页（MCP 卡）和 `craft_mode` / `craft_bridge` 仍能切换；
+- 默认两个都显示（升级不会悄悄拿走控件）。持久化在 `<root>\ui.json`（`{"composerMode":true,"composerBridge":false}`），浏览器侧另存一份 localStorage 缓存，保证刷新时第一帧就是对的。
+
+优先级从高到低：`<root>\ui.json`（设置页写的）→ 环境变量 `CRAFT_ANYTHING_COMPOSER_MODE` / `CRAFT_ANYTHING_COMPOSER_BRIDGE`（`0/1`、`false/true`、`off/on`）→ 行配置 `composerMode` / `composerBridge` → 默认显示。
+
 - 本机实测路径：`C:\Users\<你>\.dsh\plugins-data\craft-anything\v0.4.0\craft-anything-cli.exe`（portable 模式，设置在同目录 `CraftAnythingData\config.toml`）。
 
 ---

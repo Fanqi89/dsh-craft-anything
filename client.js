@@ -20,6 +20,7 @@ window.__ModuleLoader__.load({
     const MODE_ROUTE = '/craft-anything/api/mode'
     const ENV_ROUTE = '/craft-anything/api/env'
     const BRIDGE_ROUTE = '/craft-anything/api/bridge'
+    const UI_ROUTE = '/craft-anything/api/ui'
     const UPDATE_ROUTE = '/craft-anything/api/update'
     const RESTART_ROUTE = '/craft-anything/api/restart'
     const TOKEN_ROUTE = '/craft-anything/api/token'
@@ -58,6 +59,81 @@ window.__ModuleLoader__.load({
     // Poll the cheap one, keep the expensive one on mount + manual refresh + a slow timer.
     const MODE_REFRESH_MS = 60_000
     const STATUS_REFRESH_MS = 300_000
+
+    // --- composer visibility (issue #3) ------------------------------------------------------
+    // The two composer chips are the plugin's main affordance, but on a narrow window they crowd
+    // the composer tool row (especially on a phone). Both can be hidden from Settings → Craft
+    // Anything; hiding a chip unregisters that slot instead of rendering an empty one.
+    //
+    // The Host persists the choice in <root>/ui.json and serves it on the ui route. This half
+    // caches it in localStorage so the chips are already right on the first paint, then reconciles
+    // with the Host once. `prefs === null` means "not known yet": apply() waits for the first
+    // answer so a user who hid both never sees them flash in.
+    const COMPOSER_KEY = 'dsh-craft-anything:composer'
+    const DEFAULT_COMPOSER_PREFS = { composerMode: true, composerBridge: true }
+
+    function readCachedComposerPrefs() {
+      try {
+        const raw = localStorage.getItem(COMPOSER_KEY)
+        if (!raw) return null
+        const parsed = JSON.parse(raw)
+        if (!parsed || typeof parsed !== 'object') return null
+        if (typeof parsed.composerMode !== 'boolean' || typeof parsed.composerBridge !== 'boolean') return null
+        return { composerMode: parsed.composerMode, composerBridge: parsed.composerBridge }
+      } catch { return null }
+    }
+
+    const composerStore = { prefs: readCachedComposerPrefs(), listeners: new Set() }
+
+    function setComposerPrefs(patch) {
+      const base = composerStore.prefs || DEFAULT_COMPOSER_PREFS
+      const next = { composerMode: base.composerMode, composerBridge: base.composerBridge }
+      if (typeof patch.composerMode === 'boolean') next.composerMode = patch.composerMode
+      if (typeof patch.composerBridge === 'boolean') next.composerBridge = patch.composerBridge
+      const previous = composerStore.prefs
+      composerStore.prefs = next
+      try { localStorage.setItem(COMPOSER_KEY, JSON.stringify(next)) } catch { /* best effort */ }
+      if (!previous || previous.composerMode !== next.composerMode || previous.composerBridge !== next.composerBridge) {
+        for (const listener of composerStore.listeners) {
+          try { listener(next) } catch { /* a broken subscriber must not block the others */ }
+        }
+      }
+      return next
+    }
+
+    function useComposerPrefs() {
+      const [prefs, setPrefs] = React.useState(composerStore.prefs)
+      React.useEffect(() => {
+        const listener = (next) => setPrefs(next)
+        composerStore.listeners.add(listener)
+        return () => { composerStore.listeners.delete(listener) }
+      }, [])
+      return prefs
+    }
+
+    function loadComposerPrefs() {
+      return apiFetch(UI_ROUTE)
+        .then((response) => (response.ok ? response.json() : Promise.reject(new Error(`ui route answered HTTP ${response.status}`))))
+        .then((body) => {
+          const ui = body && body.ui
+          if (!ui || typeof ui.composerMode !== 'boolean' || typeof ui.composerBridge !== 'boolean') {
+            throw new Error('ui route returned no composer preference')
+          }
+          setComposerPrefs({ composerMode: ui.composerMode, composerBridge: ui.composerBridge })
+          return ui
+        })
+    }
+
+    function saveComposerPrefs(patch) {
+      return apiFetch(UI_ROUTE, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(patch),
+      }).then((response) => {
+        if (!response.ok) throw new Error(`ui route answered HTTP ${response.status}`)
+        return response.json()
+      })
+    }
 
     // --- language --------------------------------------------------------------------------
     // A tiny module-level store: the page header and the composer chip are different React
@@ -190,6 +266,17 @@ window.__ModuleLoader__.load({
         bridgeTokenEstimate: '≈{tokens} tokens',
         bridgeTrimHint: 'This many tool schemas sit in every request. "Core only" or "Investigation" keeps what most sessions need and cuts the context cost.',
         langLabel: 'Language',
+        composerTitle: 'Composer switches',
+        composerIntro: 'The clean/deep mode switch and the MCP bridge switch sit in the composer tool row. Hide the ones you do not need there — they stay available on this page and through the craft_mode / craft_bridge tools.',
+        composerModeLabel: 'Analysis mode switch (clean / deep)',
+        composerBridgeLabel: 'MCP bridge switch',
+        composerShown: 'Shown',
+        composerHidden: 'Hidden',
+        composerToggleShow: 'Show in composer',
+        composerToggleHide: 'Hide from composer',
+        composerNote: 'Hiding only removes the composer control. The current mode and the bridge state do not change, mcp__craft__* tools keep working, and this page can still switch both.',
+        composerSyncFailed: 'The Host did not accept the change, so it is saved on this device only. Run the plugin update, then try again.',
+        composerReadFailed: 'Could not read the saved preference from the Host; showing this device\'s copy.',
       },
       zh: {
         pageDesc: '看清任意网站、应用或游戏是怎么工作的（带证据），再让编码智能体重做一个你自己的版本。',
@@ -288,6 +375,17 @@ window.__ModuleLoader__.load({
         bridgeTokenEstimate: '约 {tokens} token',
         bridgeTrimHint: '这么多工具描述会抬高每一轮的上下文开销。点「仅核心」或「仅调查流程」保留大多数会话真正要用的工具。',
         langLabel: '语言',
+        composerTitle: '输入框开关',
+        composerIntro: '净室/深度模式开关和 MCP 桥开关现在放在输入框下面的工具行里。用不上的可以在这里关掉——本页和 craft_mode / craft_bridge 工具照样能切换。',
+        composerModeLabel: '分析模式开关（净室 / 深度）',
+        composerBridgeLabel: 'MCP 桥开关',
+        composerShown: '显示中',
+        composerHidden: '已隐藏',
+        composerToggleShow: '在输入框显示',
+        composerToggleHide: '从输入框隐藏',
+        composerNote: '隐藏只是去掉输入框里那个控件；当前模式与桥的状态都不变，mcp__craft__* 工具照常工作，本页也仍能切换这两项。',
+        composerSyncFailed: 'Host 没有接受这次修改，选择只保存在本机。请先更新插件再试。',
+        composerReadFailed: '读不到 Host 保存的偏好，正在显示本机这份。',
       },
     }
     function useStrings() {
@@ -1141,6 +1239,58 @@ window.__ModuleLoader__.load({
         button('en', 'English'))
     }
 
+    // --- settings section: composer visibility (issue #3) -------------------------------------
+    // Settings → Craft Anything. Hiding a switch unregisters its composer slot; this page is the
+    // "config page" for that choice and still switches the mode and the bridge itself.
+    function ComposerSettingsSection() {
+      const [lang] = useLang()
+      const s = STRINGS[lang] || STRINGS.en
+      const prefs = useComposerPrefs()
+      const [error, setError] = React.useState('')
+      const [busy, setBusy] = React.useState(null)
+      React.useEffect(() => {
+        loadComposerPrefs().catch(() => {
+          if (!composerStore.prefs) setComposerPrefs(DEFAULT_COMPOSER_PREFS)
+          setError(s.composerReadFailed)
+        })
+      }, [s.composerReadFailed])
+      const toggle = (key) => {
+        const base = prefs || DEFAULT_COMPOSER_PREFS
+        const next = !base[key]
+        setComposerPrefs({ [key]: next })
+        setBusy(key)
+        setError('')
+        saveComposerPrefs({ [key]: next })
+          .catch(() => setError(s.composerSyncFailed))
+          .then(() => setBusy(null))
+      }
+      const switchRow = (key, label) => {
+        const shown = prefs ? prefs[key] : null
+        return h(Row, { key, label },
+          h('span', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+            h('button', {
+              className: 'dsh-ca-btn' + (shown ? ' dsh-ca-btn-primary' : ''),
+              type: 'button',
+              disabled: busy === key || shown === null,
+              'aria-pressed': Boolean(shown),
+              'data-dsh-craft-anything': 'composer-toggle-' + key,
+              onClick: () => toggle(key),
+            }, shown ? s.composerShown : s.composerHidden),
+            h('span', { className: 'dsh-ca-muted', style: { fontSize: '12px' } },
+              shown ? s.composerToggleHide : s.composerToggleShow)))
+      }
+      return h(React.Fragment, null,
+        h('style', null, css),
+        h('section', { className: 'dsh-ca-card', 'data-dsh-craft-anything': 'composer-settings' },
+          h('div', { className: 'dsh-ca-card-head' }, h('h2', null, s.composerTitle)),
+          h('p', { className: 'dsh-ca-note', style: { marginTop: 0, marginBottom: '10px' } }, s.composerIntro),
+          h('div', { className: 'dsh-ca-rows' },
+            switchRow('composerMode', s.composerModeLabel),
+            switchRow('composerBridge', s.composerBridgeLabel)),
+          error ? h('p', { className: 'dsh-ca-warn', style: { fontSize: '12px', margin: '8px 0 0' } }, error) : null,
+          h('p', { className: 'dsh-ca-note' }, s.composerNote)))
+    }
+
     function CraftPage() {
       const { state, fetchStatus } = useStatus()
       const modeState = useMode()
@@ -1176,19 +1326,57 @@ window.__ModuleLoader__.load({
           label: () => 'Craft Anything',
         }, CraftIcon))
         slots.inject('main', () => slots.register({ name: 'main', key: PANEL_ID }, CraftPage))
-        // Requested placement: the left of the composer tool row, beside the other mode chip.
-        slots.inject('conversation.input.left', () => slots.register({
-          name: 'conversation.input.left',
-          id: `${PANEL_ID}/bridge`,
-          order: 84,
+        // Settings → Craft Anything: the config page for the two composer switches (issue #3).
+        slots.inject('settings.section', () => slots.register({
+          name: 'settings.section',
+          id: PANEL_ID,
+          order: 120,
           label: () => 'Craft Anything',
-        }, BridgeChip))
-        slots.inject('conversation.input.left', () => slots.register({
-          name: 'conversation.input.left',
-          id: `${PANEL_ID}/mode`,
-          order: 85,
-          label: () => 'Craft Anything',
-        }, ModeChip))
+        }, ComposerSettingsSection))
+
+        // The composer chips are registered only while the preference says so: hiding one removes
+        // the slot instead of leaving an empty box in the tool row. `composerStore.prefs === null`
+        // means the first Host answer has not arrived yet, so wait for it (a user who hid both never
+        // sees them flash in); a failed read falls back to showing both, as before.
+        const chipDisposers = []
+        const disposeChips = () => {
+          while (chipDisposers.length > 0) {
+            const dispose = chipDisposers.pop()
+            try { dispose?.() } catch { /* keep unloading the rest */ }
+          }
+        }
+        const syncComposerChips = () => {
+          disposeChips()
+          const prefs = composerStore.prefs
+          if (!prefs) return
+          if (prefs.composerBridge) {
+            chipDisposers.push(slots.inject('conversation.input.left', () => slots.register({
+              name: 'conversation.input.left',
+              id: `${PANEL_ID}/bridge`,
+              order: 84,
+              label: () => 'Craft Anything',
+            }, BridgeChip)))
+          }
+          if (prefs.composerMode) {
+            chipDisposers.push(slots.inject('conversation.input.left', () => slots.register({
+              name: 'conversation.input.left',
+              id: `${PANEL_ID}/mode`,
+              order: 85,
+              label: () => 'Craft Anything',
+            }, ModeChip)))
+          }
+        }
+        composerStore.listeners.add(syncComposerChips)
+        syncComposerChips()
+        loadComposerPrefs().catch(() => {
+          if (!composerStore.prefs) setComposerPrefs(DEFAULT_COMPOSER_PREFS)
+        })
+        if (typeof ctx.effect === 'function') {
+          ctx.effect(() => () => {
+            composerStore.listeners.delete(syncComposerChips)
+            disposeChips()
+          }, 'dsh-craft-anything: composer chips')
+        }
       },
     }
   },

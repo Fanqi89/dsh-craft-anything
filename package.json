@@ -1,9 +1,9 @@
 {
   "name": "dsh-craft-anything",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
-  "description": "Craft Anything for DeepSeek Harness: MCP bridge to the local craft-anything CLI (study any website, app or game and have a coding agent rebuild it) plus status, CLI-runner and installer tools and a status page.",
+  "description": "Craft Anything for DeepSeek Harness: MCP bridge to the local craft-anything CLI (study any website, app or game and have a coding agent rebuild it) plus status, CLI-runner and installer tools, a status page, and composer switches that can be hidden from Settings.",
   "license": "MIT",
   "author": "fanqi",
   "repository": {
@@ -36,6 +36,7 @@
   },
   "files": [
     "host/index.js",
+    "host/ui-prefs.mjs",
     "client.js",
     "cordis.patch.yml",
     "dsh.plugin.json",
@@ -69,7 +70,8 @@
       "platform": "web",
       "immediately": true,
       "inject": [
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-settings"
       ]
     }
   }

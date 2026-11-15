@@ -1,5 +1,27 @@
 # 更新日志
 
+## [v0.7.0] - 2026-11-15
+
+处理 issue #3：输入框工具行里的两个 Craft Anything 控件（净室/深度模式开关、MCP 桥开关）现在可以在**设置 → Craft Anything** 里分别隐藏，窄窗口和手机上不再和别的开关挤在一起。隐藏只针对 composer 控件：模式、桥的状态、`mcp__craft__*` 工具和插件页都不受影响。
+
+### 新增
+
+- **设置页「Craft Anything / 输入框开关」**：新增 `settings.section`，两个独立开关（显示中 / 已隐藏），改完立刻生效——隐藏是**取消注册**那个槽位，不是渲染一个空盒子，所以工具行不会留空位；插件页（MCP 卡）和 `craft_mode` / `craft_bridge` 工具仍然能切换模式和桥。
+- **偏好持久化与优先级**：设置页写入 `<root>\ui.json`；Host 新增受鉴权的 `GET/POST /craft-anything/api/ui` 路由（`guarded()`，与其他管理路由同一套 Bearer/Host/Origin 检查）。优先级 `<root>\ui.json` → `CRAFT_ANYTHING_COMPOSER_MODE` / `CRAFT_ANYTHING_COMPOSER_BRIDGE`（`0/1`、`false/true`、`off/on`）→ 行配置 `composerMode` / `composerBridge` → 默认都显示（升级不会悄悄拿走控件）。报告里带 `source`，设置页和排障都能看出值来自哪一层。
+- **无闪烁的首帧**：浏览器侧把偏好缓存进 localStorage；有缓存时先用缓存注册槽位，再和 Host 对一次账；没有缓存（首次）则等 Host 第一次回答再注册，所以隐藏过的用户不会先看到控件再消失。读不到 Host（旧版插件 / 无 webServer 的 profile）时回退为两个都显示，行为和以前一致。
+- `host/ui-prefs.mjs` 单独承载文件格式、优先级合并和路由体，便于单测；`package.json#files` 与 `dsh.client.inject` 同步（新增 `@deepseek-ai/dsh-client-ui-settings`）。
+
+### 验证
+
+- `tests/ui/run.mjs` **14/14**：默认值、env 解析、行配置与 env 的覆盖关系、`ui.json` 合并写（只改一个键不丢另一个）、设置页优先于 env/config、坏 JSON/恶意结构被忽略、空 patch 不写盘；路由 GET/POST/400/405/HEAD。
+- `tests/ui/client-registration.mjs` **4/4**：用假模块加载器 + 假 slots + 假 ui 路由真实执行 `client.js`，断言「只显示桥」「只显示模式」「两个都隐藏后 composer 里一个槽位都不剩但 side/main/settings 仍在」「Host 读失败时两个都显示」。
+- 回归：`tests/bridge/run.cjs` 41/41、`tests/bridge/bool-schema.mjs` 7/7、`tests/install-cli/run.cjs` 12/12、`tests/restart/run.mjs`、`tests/update/check.mjs` 全绿；`node --check` 三个改动文件通过。
+
+### 已知限制
+
+- 设置页的界面观感只在代码/注册层面验证过（本机 Harness 里加载的是上一次启动的模块，要更新插件并重启 DSH 才会看到新设置页）；真实浏览器里的像素级验收留待重启后复核，不在本版声称。
+- 隐藏是每台机器一份 `<root>\ui.json`（外加各浏览器自己的 localStorage 缓存），不是账号级同步；同一台机器的多个浏览器会各自带着本机缓存显示，随后与 Host 对齐。
+
 ## [v0.6.1] - 2026-11-12
 
 修复 issue #2：`core_evidence_browse` 的 `inputSchema` 里有一个布尔子 schema（`properties.evidence: true`），basalt / LM Studio / llama.cpp server 这类把工具 schema 编译成解码语法的后端会因此让**整个请求 400**（表现为整轮对话失败，看不出跟插件有关）。同时补上 README 徽章。

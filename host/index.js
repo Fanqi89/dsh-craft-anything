@@ -16,6 +16,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createUpdateService, UPDATE_ROUTE, RESTART_ROUTE, RESTART_SCRIPT } from './update.mjs'
+import { createUiRouteHandler } from './ui-prefs.mjs'
 import { rankNpmRegistries } from '../scripts/mirrors.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -901,6 +902,16 @@ function bridgeRouteHandler(getSettings) {
 const STATUS_ROUTE = '/craft-anything/api/status'
 const MODE_ROUTE = '/craft-anything/api/mode'
 
+// --- composer visibility (issue #3) -----------------------------------------------------------
+// Both composer chips (clean/deep mode + MCP bridge) can be hidden from the composer. The choice
+// lives in <root>/ui.json and is served here so the browser half — which cannot read the Loader
+// row config — knows whether to register the two slots at all. Hiding is only about the composer:
+// the mode, the bridge and every tool keep working, and the plugin page still switches both.
+// host/ui-prefs.mjs owns the file format and the route body; this half supplies the install root.
+
+const UI_ROUTE = '/craft-anything/api/ui'
+
+
 function readJsonBody(req, limit = 4096) {
   return new Promise((resolve) => {
     let size = 0
@@ -1633,6 +1644,10 @@ export function apply(ctx, config) {
     projectsRoot: typeof raw.projectsRoot === 'string' && raw.projectsRoot.trim() ? raw.projectsRoot.trim() : undefined,
     trustedHosts: Array.isArray(raw.trustedHosts) ? raw.trustedHosts : [],
     allowNonLoopback: raw.allowNonLoopback === true,
+    // Composer visibility defaults for this row (the Settings page writes <root>/ui.json, which
+    // wins over these; both default to visible so an upgrade never removes a control silently).
+    composerMode: typeof raw.composerMode === 'boolean' ? raw.composerMode : undefined,
+    composerBridge: typeof raw.composerBridge === 'boolean' ? raw.composerBridge : undefined,
   }
   // The MCP proxy is copied next to the launcher so the inline `-e` script can require it; if the
   // copy fails the launcher falls back to a plain pass-through until the next apply.
@@ -1699,6 +1714,14 @@ export function apply(ctx, config) {
     webCtx.effect(
       () => webCtx.webServer.register({ kind: 'exact', path: BRIDGE_ROUTE, handler: guarded(bridgeRouteHandler(() => settings), httpAuth) }),
       'dsh-craft-anything: bridge route',
+    )
+    webCtx.effect(
+      () => webCtx.webServer.register({
+        kind: 'exact',
+        path: UI_ROUTE,
+        handler: guarded(createUiRouteHandler(() => ({ root: installRoot(settings), env: process.env, config: settings })), httpAuth),
+      }),
+      'dsh-craft-anything: composer visibility route',
     )
     webCtx.effect(
       () => webCtx.webServer.register({ kind: 'exact', path: UPDATE_ROUTE, handler: guarded(updateRouteHandler(updateService), httpAuth) }),
