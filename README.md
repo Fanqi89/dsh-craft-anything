@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./icon.svg" width="112" height="112" alt="dsh-craft-anything 图标">
+</p>
+
 # dsh-craft-anything
 
 <p align="center">
