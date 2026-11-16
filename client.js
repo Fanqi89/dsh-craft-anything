@@ -475,16 +475,16 @@ window.__ModuleLoader__.load({
       '.dsh-ca-group:first-child{margin-top:2px;}',
       '.dsh-ca-switch{position:relative;display:inline-flex;}',
       // Both composer chips are plain text with one small state dot (PR #4). The dot carries the
-      // state, so amber — the theme's *warn* token — is reserved for the state that is NOT the
-      // default one: deep mode for the mode chip, bridge off for the bridge chip. That keeps the
-      // default "clean + bridge on" row quiet and gives the two chips the same colour language.
+      // state, and amber — the theme's *warn* token — marks the state that is *doing something*:
+      // deep mode for the mode chip, bridge on for the bridge chip. Both are the state that costs
+      // (source access / tool schema in context), so both read the same way at a glance.
       // `:not(:disabled)` keeps a switch that is mid-request dimmed instead of snapping to full.
       '.dsh-ca-switch-btn{appearance:none;-webkit-appearance:none;display:inline-flex;align-items:center;gap:6px;border:0;box-shadow:none;background:transparent;color:inherit;font:inherit;font-size:12px;line-height:1;padding:4px 2px;border-radius:6px;cursor:pointer;white-space:nowrap;opacity:.85;}',
       '.dsh-ca-switch-btn:not(:disabled):hover{color:var(--dsw-alias-label-primary);opacity:1;}',
       '.dsh-ca-switch-btn:disabled{opacity:.5;cursor:default;}',
       '.dsh-ca-switch-dot{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-border-l2);flex:none;transition:background .15s ease;}',
-      '.dsh-ca-switch-btn[data-deep="true"]:not(:disabled),.dsh-ca-switch-btn[data-on="false"]:not(:disabled){opacity:1;}',
-      '.dsh-ca-switch-btn[data-deep="true"] .dsh-ca-switch-dot,.dsh-ca-switch-btn[data-on="false"] .dsh-ca-switch-dot{background:var(--dsw-alias-state-warn-primary);}',
+      '.dsh-ca-switch-btn[data-deep="true"]:not(:disabled),.dsh-ca-switch-btn[data-on="true"]:not(:disabled){opacity:1;}',
+      '.dsh-ca-switch-btn[data-deep="true"] .dsh-ca-switch-dot,.dsh-ca-switch-btn[data-on="true"] .dsh-ca-switch-dot{background:var(--dsw-alias-state-warn-primary);}',
       '.dsh-ca-switch-caret{font-size:9px;opacity:.7;}',
       '.dsh-ca-menu{position:fixed;z-index:2147483000;min-width:190px;padding:4px;border-radius:10px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay);box-shadow:0 8px 28px rgba(0,0,0,.28);}',
       '.dsh-ca-menu-item{appearance:none;-webkit-appearance:none;display:flex;width:100%;align-items:center;gap:8px;border:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;line-height:1.35;text-align:left;padding:7px 8px;border-radius:7px;cursor:pointer;}',
