@@ -42,7 +42,7 @@
 | **工具 schema 归一化** | 响应 issue #2：桥在 `tools/list` 出口把布尔子 schema 归一化（`true` → `{}`，`false` → `{ not: {} }`，`additionalProperties` 布尔保留），避免 basalt / LM Studio / llama.cpp 这类 grammar 后端因为一个 `evidence: true` 让**整轮请求 400**。只改传输层，工具调用语义不变。 |
 | **状态页** | 左侧栏「Craft Anything」图标 → 中央面板显示本地安装、能力、MCP 桥与常用命令；数据来自插件自己的 `GET /craft-anything/api/status`（默认缓存 60 秒，页面手动刷新走 `?full=1`）。 |
 
-截图（DSH 对话框左下角的模式开关、左侧栏入口、状态页）见仓库 Releases / 使用说明；界面文字与状态实时读取本机。
+截图（DSH 对话框左下角的模式开关、左侧栏入口、状态页）见仓库 Releases / 使用说明；界面文字与状态实时读取本机。v0.7.0–v0.7.2 的输入框开关与配色在真实界面里的验收（含像素采样与复原记录）见 [docs/evidence/craft-v072-visual-acceptance.md](docs/evidence/craft-v072-visual-acceptance.md)。
 
 ---
 
