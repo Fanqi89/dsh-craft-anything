@@ -603,8 +603,8 @@ export const inject = ['tools']
 //   2. Origin fence: a browser request must come from the same local origin; a cross-site request
 //      is refused before any work happens (CSRF).
 //   3. Host connection admission: browser-originated requests must carry the DSH session credential
-//      (ctx.connection.requestRejection applies DSH's own Host/Origin/browser checks and answers
-//      401/403 for unauthenticated requests).
+//      (ctx.connection.requestRejection on older DSH, or ctx.connection.admit on master —
+//      both apply Host/Origin/browser checks and answer 401/403/503 for unauthenticated requests).
 //   4. Bearer token: this plugin's own random per-process token, required on every management
 //      request. The Web page bootstraps it from GET /craft-anything/api/token (itself behind the
 //      DSH connection admission) and it is also written to <root>/http.token (0600) for local CLI
@@ -631,7 +631,11 @@ function createHttpAuth(ctx, settings = {}) {
     connection: () => {
       try {
         const connection = ctx.get('connection')
-        return connection && typeof connection.requestRejection === 'function' ? connection : undefined
+        // DSH master removed requestRejection in favor of admit(); accept either.
+        if (connection && (typeof connection.requestRejection === 'function' || typeof connection.admit === 'function')) {
+          return connection
+        }
+        return undefined
       } catch {
         return undefined
       }
@@ -724,8 +728,23 @@ async function rejectRequest(req, auth, options = {}) {
   if (requireConnection || isBrowserRequest(req)) {
     const connection = auth.connection()
     if (!connection) return 401
-    const rejection = connection.requestRejection({ headers: req.headers })
-    if (rejection === 401 || rejection === 403) return rejection
+    let rejection
+    try {
+      if (typeof connection.requestRejection === 'function') {
+        rejection = connection.requestRejection({ headers: req.headers })
+      } else if (typeof connection.admit === 'function') {
+        const admission = connection.admit({ headers: req.headers })
+        rejection = admission && typeof admission === 'object' && 'rejection' in admission
+          ? admission.rejection
+          : undefined
+      } else {
+        rejection = 401
+      }
+    } catch (err) {
+      console.error('[dsh-craft-anything] connection admission failed:', err)
+      return 401
+    }
+    if (rejection === 401 || rejection === 403 || rejection === 503) return rejection
   }
   if (requireToken && !constantEquals(bearerOf(req), auth.token)) return 401
   return undefined

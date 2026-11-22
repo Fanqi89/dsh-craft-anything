@@ -1,5 +1,16 @@
 # 更新日志
 
+## [v0.7.3] - 2026-11-22
+
+### 修复
+
+- **DSH master / post-rc.3 `connection.requestRejection` 移除**：管理路由准入现在 feature-detect `requestRejection`，缺失时回退到 `connection.admit()`（`rejection` → 401/403/503）。修复状态页「token route answered HTTP 401」、Host 半截看似未激活的问题。旧 DSH（仍有 `requestRejection`）行为不变。
+
+### 验证
+
+- `node --check host/index.js`
+- 本机源码 checkout 的 `dsh web` + 浏览器 cookie：`GET /craft-anything/api/token` 在补丁前 fail-closed 401（`connection()` 因无 `requestRejection` 返回 undefined）；补丁后走 `admit`。
+
 ## [v0.7.2] - 2026-11-17
 
 合并社区 PR [#5](https://github.com/Fanqi89/dsh-craft-anything/pull/5)（作者 [@yuran123345678](https://github.com/yuran123345678)，rebase 合并，署名保留）：把状态点配色改回 #4 的原始意图——**琥珀 = 这个 chip 正在做事**（深度模式 / 桥开启），**灰 = 休息状态**（净室 / 桥关闭），修掉 v0.7.1 里「桥关才亮琥珀」的读法问题。
