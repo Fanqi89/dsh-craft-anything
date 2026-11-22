@@ -4,12 +4,12 @@
 
 ### 修复
 
-- **DSH master / post-rc.3 `connection.requestRejection` 移除**：管理路由准入现在 feature-detect `requestRejection`，缺失时回退到 `connection.admit()`（`rejection` → 401/403/503）。修复状态页「token route answered HTTP 401」、Host 半截看似未激活的问题。旧 DSH（仍有 `requestRejection`）行为不变。
+- **DSH master 管理路由 401 / Cordis inject 崩**：不再在 HTTP handler 里调用 `connection.requestRejection()` / `admit()`（master 上会抛 `cannot get property "connection.authentication" without inject`）。浏览器会话改由 `webServer.register({ auth: craftRouteAuth })` 走宿主 `webserver/authorize`（正确 fiber）；本地 CLI 仍用 `anonymous` + Bearer（`http.token`）。修复状态页「token route answered HTTP 401」。
 
 ### 验证
 
 - `node --check host/index.js`
-- 本机源码 checkout 的 `dsh web` + 浏览器 cookie：`GET /craft-anything/api/token` 在补丁前 fail-closed 401（`connection()` 因无 `requestRejection` 返回 undefined）；补丁后走 `admit`。
+- 本机源码 checkout 的 `dsh web`：带 DSH cookie 的浏览器 `GET /craft-anything/api/token` → 200；无 cookie → 宿主 401；Bearer + status → 200。
 
 ## [v0.7.2] - 2026-11-17
 
