@@ -67,10 +67,12 @@
         # between. Both default to true, so an upgrade never removes a control silently.
         # composerMode: true
         # composerBridge: true
-        # The HTTP management routes (status/mode/env/token) are authenticated: a random per-process
-        # Bearer token (also written to <root>/http.token, 0600), the Host/Origin fence, and DSH's own
-        # connection admission. Widen the fence only if the Web UI is deliberately served beyond
-        # loopback: allowNonLoopback: true + trustedHosts: ['myhost:51404'].
+        # The HTTP management routes are authenticated (see host/http-auth.mjs): a random
+        # per-process Bearer token (also written to <root>/http.token, 0600), the Host/Origin fence,
+        # and the DSH session gate — route auth on current DSH (webserver/authorize), the
+        # connection.requestRejection() hook on DSH <= 0.2.1-rc.5. Widen the fence only if the Web
+        # UI is deliberately served beyond loopback:
+        # allowNonLoopback: true + trustedHosts: ['myhost:51404'].
         # trustedHosts: ['myhost:51404']
         # allowNonLoopback: false
     - id: craft-anything-mcp

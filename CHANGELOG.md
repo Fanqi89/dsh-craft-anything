@@ -1,15 +1,27 @@
 # 更新日志
 
-## [v0.7.3] - 2026-11-22
+## [v0.7.3] - 2026-11-23
+
+修复 DSH master 上管理接口全部 401（社区 PR [#6](https://github.com/Fanqi89/dsh-craft-anything/pull/6)，作者 [@brochar27](https://github.com/brochar27)，rebase 合并、署名保留）。master 把浏览器会话判定移进 `webserver/authorize`（路由 `auth`），并把 `connection.authentication` 改成 inject-only、移除了 `requestRejection()`；旧实现是在 HTTP handler 里直接问 connection 服务，于是拿不到会话——连 `GET /craft-anything/api/token` 都 401，Web 页面提示「token route answered HTTP 401」。本版改成「路由声明 + 双线兼容」。
 
 ### 修复
 
-- **DSH master 管理路由 401 / Cordis inject 崩**：不再在 HTTP handler 里调用 `connection.requestRejection()` / `admit()`（master 上会抛 `cannot get property "connection.authentication" without inject`）。浏览器会话改由 `webServer.register({ auth: craftRouteAuth })` 走宿主 `webserver/authorize`（正确 fiber）；本地 CLI 仍用 `anonymous` + Bearer（`http.token`）。修复状态页「token route answered HTTP 401」。
+- **master：改用路由级 auth**。8 条管理路由都带 `auth`：token 路由固定 `required`（它是 Bearer token 的发放口，永远不能匿名）；其余路由用 `craftRouteAuth`——浏览器（带 `Sec-Fetch-Site` / `Origin` / `Referer`）→ `required` 交给 DSH 的 `webserver/authorize` 判定会话，本地 CLI（无这些头）→ `anonymous`，但仍必须带 Bearer。handler 里不再调用 connection 服务。
+- **DSH <= 0.2.1-rc.5 行为不变**。这些版本没有路由级 auth（`register()` 会忽略未知的 `auth` 键），所以仍在 handler 里探测 `connection.requestRejection()` 做浏览器会话门；探测不到、或调用抛 inject 错（master）时视为「路由 auth 已接管」，不把它变成 401。token 路由继续 `requireConnection: 'always'`。
+- **注册兜底**：极老的 carrier 若拒绝未知路由键，会退化成不带 `auth` 注册（走 handler 兜底），不会因为升级插件导致路由注册失败。
+- **整理**：Host/Origin/Bearer/route-auth 全部抽到 `host/http-auth.mjs`（原先散在 `host/index.js`）；两个 manifest 版本同步 0.7.3，`files` 收录新模块。
 
 ### 验证
 
-- `node --check host/index.js`
-- 本机源码 checkout 的 `dsh web`：带 DSH cookie 的浏览器 `GET /craft-anything/api/token` → 200；无 cookie → 宿主 401；Bearer + status → 200。
+- 新增 `tests/auth/run.mjs` **26/26**：auth 分类器（6 种浏览器/CLI 头组合）、Host/Origin 围栏、Bearer 解析与常量比较、connection 探测（有 hook / 无 hook / 抛 inject 错）、`rejectRequest` 在「旧版有会话」「master 无会话」「调用抛错」三种世界里的结果、token 路由（浏览器引导 200、旧版无会话 401、POST 405）、以及用假 Context + webServer 跑 `apply()` 断言 8 条路由的 auth 策略与旧 carrier 的注册兜底。
+- **真机探针（DSH 0.2.1-rc.5，独立 `DSH_HOME` + 只加载 base/web-app/本插件的 probe profile，端口 51337）**：`token(无 cookie)` → 401；`token(浏览器头，无 cookie)` → 401；`token(cookie + 浏览器头)` → 200；`status(Bearer，无浏览器头)` → 200；`status(Bearer + 浏览器头，无 cookie)` → 401（旧版的会话门仍然生效）；`status(cookie + 浏览器头 + Bearer)` → 200；伪造 Host / 跨站 Origin → 403；`http.token` 为 64 位十六进制。
+- 回归：`tests/ui/run.mjs` 14/14、`tests/ui/client-registration.mjs` 4/4、`tests/bridge/run.cjs` 41/41、`tests/install-cli/run.cjs` 12/12、`tests/restart/run.mjs`、`tests/update/check.mjs` 全绿；`node --check host/index.js host/http-auth.mjs` 通过。
+- master 侧依据 upstream 源码核对（`packages/host/webserver/src/index.ts` 的 `WebAuthenticationRule` + `webserver/authorize` waterfall；`packages/client/connection/src/rpc-host.ts` 的 authorize 监听；整个 connection 包已无 `requestRejection`）。
+
+### 已知限制
+
+- 本机安装的是 DSH 0.2.1-rc.5，**没有 master 运行时**：master 路径靠 upstream 源码核对 + 假 Context 单测覆盖，未在真实 master 上跑过；master 用户若仍 401，请在 PR/issue 回帖。
+- 两条线的信任边界仍是「同一 OS 用户」：本机同用户的进程可以读 `<root>/http.token`（0600），这一点没有改变；带来的便利是本地 CLI/curl 继续可用。
 
 ## [v0.7.2] - 2026-11-17
 

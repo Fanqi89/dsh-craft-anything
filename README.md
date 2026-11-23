@@ -252,17 +252,19 @@ DSH 的 mcp-client 会把 stdio 服务器列出的每个工具都注册进上下
 
 ## 安全：管理接口鉴权
 
-五条管理路由（`/craft-anything/api/status`、`/mode`、`/env`、`/bridge`、`/update`，以及 `POST /craft-anything/api/restart`）
+八条管理路由（`/craft-anything/api/status`、`/mode`、`/env`、`/bridge`、`/ui`、`/update`、`POST /craft-anything/api/restart`，以及发放 Bearer 的 `/token`）
 统一下了四层准入；未通过直接 401/403 且**不执行任何副作用**（不会跑 CLI、不会装依赖）：
 
 1. **Host 头白名单**：只接受 `127.0.0.1` / `localhost`（含 `::1`）；Host 不是本机 → 403（防 DNS rebinding）。
 2. **Origin 校验**：浏览器发来的请求，`Origin` 必须与请求的本地 authority 一致；跨站请求 → 403（防 CSRF，跨域 POST 一律拒绝）。
-3. **宿主 connection 准入**：浏览器请求必须带 DSH 自己的会话凭据——`ctx.connection.requestRejection()` 复用宿主 DSH 的 Host/Origin/浏览器认证，未登录的浏览器请求 → 401。
+3. **DSH 会话准入（两种机制，按运行的 DSH 版本自动选择）**：浏览器请求必须带 DSH 自己的会话凭据。
+   - **current DSH（master 起）**：路由声明 `auth`——浏览器请求为 `required`，由宿主的 `webserver/authorize` 判定会话；本地 CLI 为 `anonymous`，但仍必须带 Bearer。token 路由固定 `required`（它发放 Bearer，永不匿名）。
+   - **DSH ≤ 0.2.1-rc.5**：没有路由级 auth，改在 handler 里调用 `connection.requestRejection()` 做同一层判定（未登录的浏览器请求 → 401）。探测不到这个钩子（master 已移除、`connection.authentication` 变成 inject-only）时视为「路由 auth 已接管」，不会一律 401。
 4. **Bearer Token**：插件启动时用 `crypto.randomBytes(32)` 生成一次性随机 Token，所有管理请求必须带 `Authorization: Bearer <token>`，缺失或错误 → 401（比较用 `timingSafeEqual`）。
 
 Token 的取得方式（**不需要用户输入密码或扫码**）：
 
-- **页面自动引导**：状态页启动时 `GET /craft-anything/api/token`（该路由本身在 connection 准入之后）拿到 Token，之后所有 fetch 自动附带 Bearer；Token 轮换（插件重载）时遇到一次 401 会自动重新引导并重试。
+- **页面自动引导**：状态页启动时 `GET /craft-anything/api/token`（该路由本身要求已通过 DSH 会话准入——master 上由路由 auth、旧版由 connection 准入）拿到 Token，之后所有 fetch 自动附带 Bearer；Token 轮换（插件重载）时遇到一次 401 会自动重新引导并重试。
 - **本地脚本/CLI**：Token 同时写到 `<root>/http.token`（Unix 上 0600），直接读文件即可：
 
 ```powershell

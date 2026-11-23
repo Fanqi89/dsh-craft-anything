@@ -9,7 +9,7 @@
 // Everything here only reads local state or runs the local CLI. No network call
 // is made except by craft_install, which downloads the official release.
 
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -17,6 +17,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createUpdateService, UPDATE_ROUTE, RESTART_ROUTE, RESTART_SCRIPT } from './update.mjs'
 import { createUiRouteHandler } from './ui-prefs.mjs'
+import { TOKEN_ROUTE_AUTH, guarded, tokenRouteHandler, craftRouteAuth } from './http-auth.mjs'
 import { rankNpmRegistries } from '../scripts/mirrors.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -597,29 +598,16 @@ function modeTool(config) {
 export const inject = ['tools']
 
 // --- HTTP management-interface authentication ---------------------------------------------------
-// Named routes on the DSH Web server have no server-wide auth (the carrier README says route owners
-// "enforce their own request policy"), so every management route below is guarded here:
-//   1. Host fence: only 127.0.0.1 / localhost (or an explicitly configured trustedHosts entry).
-//   2. Origin fence: a browser request must come from the same local origin; a cross-site request
-//      is refused before any work happens (CSRF).
-//   3. Host connection admission: browser-originated requests must carry the DSH session credential
-//      Browser requests use webServer route auth `required` so DSH's webserver/authorize
-//      waterfall (connection.authentication) runs in the Host fiber — do NOT call
-//      ctx.connection.admit()/requestRejection() from these handlers: on DSH master that
-//      re-enters connection.authentication through Cordis inject and throws
-//      "cannot get property connection.authentication without inject".
-//      Non-browser clients (local CLI reading http.token) use route auth `anonymous` and
-//      are gated by the Bearer token below.
-//   4. Bearer token: this plugin's own random per-process token, required on every management
-//      request. The Web page bootstraps it from GET /craft-anything/api/token (browser + DSH
-//      cookie via route auth) and it is also written to <root>/http.token (0600) for local CLI
-//      clients. No password or manual input is involved.
+// The route-level auth rule, the Host/Origin fences and the Bearer check live in
+// ./http-auth.mjs (that module documents the four layers and the two DSH session mechanisms).
+// This half only owns the token itself: one random token per Harness process, written owner-only
+// for local CLI clients and bootstrapped by the Web page from GET /craft-anything/api/token.
 
 const TOKEN_ROUTE = '/craft-anything/api/token'
 const HTTP_TOKEN_FILE = 'http.token'
 const HTTP_TOKEN_MIN_LENGTH = 32
 
-function createHttpAuth(settings = {}) {
+function createHttpAuth(ctx, settings = {}) {
   const override = typeof process.env.CRAFT_ANYTHING_HTTP_TOKEN === 'string' ? process.env.CRAFT_ANYTHING_HTTP_TOKEN.trim() : ''
   const token = override.length >= HTTP_TOKEN_MIN_LENGTH ? override : randomBytes(32).toString('hex')
   const tokenFile = path.join(installRoot(settings), HTTP_TOKEN_FILE)
@@ -633,128 +621,19 @@ function createHttpAuth(settings = {}) {
     tokenFile,
     trustedHosts: Array.isArray(settings.trustedHosts) ? settings.trustedHosts.filter((entry) => typeof entry === 'string' && entry.trim()).map((entry) => entry.trim()) : [],
     allowNonLoopback: settings.allowNonLoopback === true,
+    // DSH <= 0.2.1-rc.5 keep the browser-session decision in the handler and expose
+    // connection.requestRejection() for it; current DSH moved that decision into route auth and
+    // removed the method, so resolving nothing here is the correct no-op (route auth already
+    // admitted the browser). The probe never throws into a request.
+    connection: () => {
+      try {
+        const connection = ctx.get('connection')
+        return connection && typeof connection.requestRejection === 'function' ? connection : undefined
+      } catch {
+        return undefined
+      }
+    },
   }
-}
-
-/** Browser vs local-CLI auth split for webServer.register({ auth }). */
-function craftRouteAuth(request) {
-  const headers = request?.headers
-  const site = headerOf(headers, 'sec-fetch-site')
-  if (site !== undefined) return site === 'none' ? 'anonymous' : 'required'
-  if (headerOf(headers, 'origin') !== undefined || headerOf(headers, 'referer') !== undefined) return 'required'
-  return 'anonymous'
-}
-
-function headerOf(headers, name) {
-  if (!headers) return undefined
-  const value = headers[name] ?? headers[name.toLowerCase()]
-  if (Array.isArray(value)) return value.join(', ')
-  return typeof value === 'string' ? value : undefined
-}
-
-function authorityOf(value) {
-  if (typeof value !== 'string' || value.length === 0) return undefined
-  try { return new URL(`http://${value}`) } catch { return undefined }
-}
-
-function isLoopbackHostname(hostname) {
-  const normal = String(hostname || '').toLowerCase()
-  if (normal === 'localhost' || normal === '::1' || normal === '[::1]') return true
-  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(normal)
-  if (!match) return false
-  const octets = match.slice(1).map(Number)
-  return octets.every((part) => part >= 0 && part <= 255) && octets[0] === 127
-}
-
-/** Host header fence: loopback only unless the profile explicitly widens it. */
-function hostAllowed(req, auth) {
-  const authority = authorityOf(headerOf(req.headers, 'host'))
-  if (!authority) return false
-  if (isLoopbackHostname(authority.hostname)) return true
-  if (!auth.allowNonLoopback) return false
-  const normalized = authority.host.toLowerCase()
-  return auth.trustedHosts.some((entry) => {
-    const trusted = authorityOf(entry)
-    return trusted !== undefined && trusted.host.toLowerCase() === normalized
-  })
-}
-
-/** Origin fence: a browser Origin must equal the request authority and stay local. */
-function originAllowed(req, auth) {
-  const origin = headerOf(req.headers, 'origin')
-  if (origin === undefined) return true // non-browser client: gated by the Bearer token
-  let parsed
-  try { parsed = new URL(origin) } catch { return false }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
-  if (!isLoopbackHostname(parsed.hostname) && !(auth.allowNonLoopback && auth.trustedHosts.length > 0)) return false
-  const authority = authorityOf(headerOf(req.headers, 'host'))
-  if (!authority) return false
-  return parsed.host.toLowerCase() === authority.host.toLowerCase()
-}
-
-function isBrowserRequest(req) {
-  const site = headerOf(req.headers, 'sec-fetch-site')
-  if (site !== undefined) return site !== 'none'
-  return headerOf(req.headers, 'origin') !== undefined || headerOf(req.headers, 'referer') !== undefined
-}
-
-function bearerOf(req) {
-  const value = headerOf(req.headers, 'authorization')
-  if (typeof value !== 'string') return undefined
-  const match = /^Bearer[ \t]+([A-Za-z0-9._~+/=-]{8,4096})$/i.exec(value.trim())
-  return match ? match[1] : undefined
-}
-
-function constantEquals(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false
-  const left = Buffer.from(a, 'utf8')
-  const right = Buffer.from(b, 'utf8')
-  return left.length === right.length && timingSafeEqual(left, right)
-}
-
-function sendJson(res, status, payload) {
-  res.statusCode = status
-  res.setHeader('content-type', 'application/json; charset=utf-8')
-  res.setHeader('cache-control', 'no-store')
-  res.setHeader('x-content-type-options', 'nosniff')
-  res.setHeader('vary', 'Origin')
-  res.end(JSON.stringify(payload))
-}
-
-/** undefined: authorized; 401/403: answer that status and stop before any side effect. */
-async function rejectRequest(req, auth, options = {}) {
-  const requireToken = options.requireToken !== false
-  if (!hostAllowed(req, auth)) return 403
-  if (!originAllowed(req, auth)) return 403
-  // DSH session cookies are enforced by webServer route auth (`craftRouteAuth` →
-  // `required` for browsers). Handlers must not call connection.admit() here.
-  if (requireToken && !constantEquals(bearerOf(req), auth.token)) return 401
-  return undefined
-}
-
-function guarded(handler, auth, options = {}) {
-  return async (req, res) => {
-    const rejection = await rejectRequest(req, auth, options)
-    if (rejection !== undefined) {
-      sendJson(res, rejection, {
-        ok: false,
-        error: rejection === 401 ? 'unauthorized' : 'forbidden',
-        hint: rejection === 401 && options.requireToken !== false ? 'management routes require Authorization: Bearer <token> from /craft-anything/api/token' : undefined,
-      })
-      return
-    }
-    return handler(req, res)
-  }
-}
-
-function tokenRouteHandler(auth) {
-  return guarded(async (req, res) => {
-    if (req.method !== 'GET' && req.method !== 'HEAD') {
-      sendJson(res, 405, { ok: false, error: 'GET only' })
-      return
-    }
-    sendJson(res, 200, { ok: true, token: auth.token })
-  }, auth, { requireToken: false })
 }
 
 
@@ -1677,7 +1556,7 @@ export function apply(ctx, config) {
 
   // Management-interface auth: one random token per Harness process, written owner-only for local
   // CLI clients and bootstrapped by the Web page; every route below sits behind guarded().
-  const httpAuth = createHttpAuth(settings)
+  const httpAuth = createHttpAuth(ctx, settings)
 
   // Update check / one-click update / restart (see host/update.mjs for the whole flow).
   const updateService = createUpdateService({
@@ -1696,42 +1575,49 @@ export function apply(ctx, config) {
   // The Web page reads live install state from this route. webServer is optional:
   // without it (TUI-only profile) the tools still work and the page is not mounted.
   ctx.inject(['webServer'], (webCtx) => {
-    const route = (path, handler) => webCtx.webServer.register({
-      kind: 'exact',
-      path,
-      auth: craftRouteAuth,
-      handler,
-    })
+    // Route auth is what current DSH uses for the browser session (webserver/authorize); older
+    // lines ignore the key and the handler-side connection fallback keeps their gate. Very old
+    // carriers that reject unknown route keys fall back to registering without it.
+    const route = (path, handler, authPolicy) => {
+      const base = { kind: 'exact', path, handler }
+      const spec = authPolicy === undefined ? base : { ...base, auth: authPolicy }
+      try {
+        return webCtx.webServer.register(spec)
+      } catch (error) {
+        if (authPolicy === undefined) throw error
+        return webCtx.webServer.register(base)
+      }
+    }
     webCtx.effect(
-      () => route(TOKEN_ROUTE, tokenRouteHandler(httpAuth)),
+      () => route(TOKEN_ROUTE, tokenRouteHandler(httpAuth), TOKEN_ROUTE_AUTH),
       'dsh-craft-anything: token route',
     )
     webCtx.effect(
-      () => route(STATUS_ROUTE, guarded(statusRouteHandler(() => settings), httpAuth)),
+      () => route(STATUS_ROUTE, guarded(statusRouteHandler(() => settings), httpAuth), craftRouteAuth),
       'dsh-craft-anything: status route',
     )
     webCtx.effect(
-      () => route(MODE_ROUTE, guarded(modeRouteHandler(() => settings), httpAuth)),
+      () => route(MODE_ROUTE, guarded(modeRouteHandler(() => settings), httpAuth), craftRouteAuth),
       'dsh-craft-anything: mode route',
     )
     webCtx.effect(
-      () => route(ENV_ROUTE, guarded(envRouteHandler(() => settings), httpAuth)),
+      () => route(ENV_ROUTE, guarded(envRouteHandler(() => settings), httpAuth), craftRouteAuth),
       'dsh-craft-anything: environment route',
     )
     webCtx.effect(
-      () => route(BRIDGE_ROUTE, guarded(bridgeRouteHandler(() => settings), httpAuth)),
+      () => route(BRIDGE_ROUTE, guarded(bridgeRouteHandler(() => settings), httpAuth), craftRouteAuth),
       'dsh-craft-anything: bridge route',
     )
     webCtx.effect(
-      () => route(UI_ROUTE, guarded(createUiRouteHandler(() => ({ root: installRoot(settings), env: process.env, config: settings })), httpAuth)),
+      () => route(UI_ROUTE, guarded(createUiRouteHandler(() => ({ root: installRoot(settings), env: process.env, config: settings })), httpAuth), craftRouteAuth),
       'dsh-craft-anything: composer visibility route',
     )
     webCtx.effect(
-      () => route(UPDATE_ROUTE, guarded(updateRouteHandler(updateService), httpAuth)),
+      () => route(UPDATE_ROUTE, guarded(updateRouteHandler(updateService), httpAuth), craftRouteAuth),
       'dsh-craft-anything: update route',
     )
     webCtx.effect(
-      () => route(RESTART_ROUTE, guarded(restartRouteHandler(updateService), httpAuth)),
+      () => route(RESTART_ROUTE, guarded(restartRouteHandler(updateService), httpAuth), craftRouteAuth),
       'dsh-craft-anything: restart route',
     )
   })

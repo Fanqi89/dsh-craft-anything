@@ -37,6 +37,7 @@
   "files": [
     "host/index.js",
     "host/ui-prefs.mjs",
+    "host/http-auth.mjs",
     "client.js",
     "cordis.patch.yml",
     "dsh.plugin.json",
